@@ -23,8 +23,11 @@ jobs:
       - run: npm run dist
       - uses: actions/upload-artifact@v4
         with:
-          name: lolPing-windows
-          path: |
-            release/lolPing-Setup-*.exe
-            release/lolPing-*-portable.exe
+          name: lolPing-portable
+          path: release/lolPing-*-portable.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lolPing-setup
+          path: release/lolPing-Setup-*.exe
           if-no-files-found: error
