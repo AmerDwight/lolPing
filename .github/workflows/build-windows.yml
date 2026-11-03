@@ -1,0 +1,28 @@
+name: Build Windows
+
+# Builds the installer and the portable .exe on demand and keeps them as a workflow artifact, without publishing a release.
+on:
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run test:helper
+      - run: npm test
+      - run: npm run dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lolPing-windows
+          path: |
+            release/lolPing-Setup-*.exe
+            release/lolPing-*-portable.exe
+          if-no-files-found: error
