@@ -12,7 +12,7 @@ import {
 import { RateLimiter } from './rateLimiter';
 import { ReplayGuard } from './replayGuard';
 import {
-  makeIdentity, open, peerIdOf, publicKeyOf, seal, signBody, verifyBody, type RoomIdentity, type RoomKeys,
+  makeIdentity, MAX_PACKET, MAX_SHARED_PACKET, open, peerIdOf, publicKeyOf, seal, signBody, verifyBody, type RoomIdentity, type RoomKeys,
 } from './roomCrypto';
 import type { PeerKey, Transport, TransportStatus } from './transport';
 
@@ -137,7 +137,7 @@ interface Member {
  * The room: who is in it, what we send, and what we let through. Talks to the network only through transports,
  * which carry sealed packets. Events: 'state' (RoomStateCore), 'remotePing' (RemotePing), 'remoteEmote' (RemoteEmote), 'toast' (RoomToast),
  * 'remoteText' (RemoteText: text and alive lines), 'vote' (VoteMsg), 'ballot' (BallotMsg), 'saveCode' (canonical code | null: what "rejoin last room" should remember), 'emotes' (peer, announced hashes),
- * 'want' (WantMsg), 'chunk' (ChunkMsg) and 'memberGone' (peer), which EmoteTransfer answers.
+ * 'want' (WantMsg), 'chunk' (ChunkMsg), 'blob' (BlobMsg) and 'memberGone' (peer), which EmoteTransfer answers.
  */
 export class RoomManager extends EventEmitter {
   /**
@@ -303,11 +303,14 @@ export class RoomManager extends EventEmitter {
     }
   }
 
-  /** One sealed broadcast on every shared transport: a relay reaches the whole room. Chunk pacing is the caller's job. */
+  /**
+   * One sealed broadcast on every shared transport: a relay reaches the whole room. Chunk pacing is the caller's job.
+   * A `blob` part may be as long as MAX_SHARED_PACKET; everything else keeps the ordinary cap.
+   */
   broadcastShared(body: Record<string, unknown>): void {
     if (this.phase === 'idle' || !this.keys) return;
     try {
-      const packet = this.seal(body);
+      const packet = this.seal(body, body.t === 'blob' ? MAX_SHARED_PACKET : MAX_PACKET);
       for (const t of this.active) if (t.shared) t.broadcast(packet);
     } catch {
       // dropped, as above
@@ -502,16 +505,19 @@ export class RoomManager extends EventEmitter {
 
   private onPacket(t: Transport, key: PeerKey, packet: Uint8Array): void {
     if (!this.keys) return;
-    const plain = open(this.keys.msgKey, packet);
+    // Only a relay may bring a long packet, and only a blob part may be one.
+    const plain = open(this.keys.msgKey, packet, t.shared ? MAX_SHARED_PACKET : MAX_PACKET);
     const decoded = plain && decodeSigned(plain);
     if (!decoded || decoded.msg.peer === this.self) return;
     const { msg, body, sig } = decoded;
-    // Chunks are never signed (a signature wouldn't fit), and needn't be: a still is checked against its hash when
-    // assembled. So whoever a chunk claims to be from, it never moves a replay window, a liveness clock or a route.
-    if (msg.t === 'chunk') {
+    if (packet.length > MAX_PACKET && msg.t !== 'blob') return;
+    // Chunks and blob parts are never signed (a signature wouldn't fit a chunk), and needn't be: a still or sound is
+    // checked against its hash when assembled. So whoever one claims to be from, it never moves a replay window, a
+    // liveness clock or a route.
+    if (msg.t === 'chunk' || msg.t === 'blob') {
       const m = this.members.get(msg.peer);
       if (!m || this.paused || m.muted || m.needsUpdate || !this.transferLimiter.allow(m.peer, TRANSFER_RATE)) return;
-      this.emit('chunk', msg);
+      this.emit(msg.t, msg);
       return;
     }
     let pk: KeyObject | null = null;
@@ -758,12 +764,12 @@ export class RoomManager extends EventEmitter {
     }
   }
 
-  private seal(body: Record<string, unknown>): Buffer {
+  private seal(body: Record<string, unknown>, max = MAX_PACKET): Buffer {
     const msg = { peer: this.self, seq: ++this.seq, ts: this.deps.now(), ...body } as RoomMessage;
     const bytes = encodeMessage(msg);
-    if (msg.t === 'chunk') return seal(this.keys!.msgKey, bytes);
+    if (msg.t === 'chunk' || msg.t === 'blob') return seal(this.keys!.msgKey, bytes, max);
     const signed = joinSigned(new TextDecoder().decode(bytes), signBody(this.identity, bytes));
-    return seal(this.keys!.msgKey, new TextEncoder().encode(signed));
+    return seal(this.keys!.msgKey, new TextEncoder().encode(signed), max);
   }
 
   private emitState(): void {

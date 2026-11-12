@@ -101,6 +101,8 @@ export interface WantMsg extends Base {
   to: string;
   h: string;
   need: number[];
+  /** Added after 0.6.0: the asker reads `blob` messages, so over a relay the whole of `h` may come in those. Older apps ignore it and answer in chunks. */
+  big?: true;
 }
 /** Added in 0.5.2: one slice `i` of `n` of the still or shared sound `h`, base64 in `b`. A chunk's sealed packet stays under MAX_PACKET. */
 export interface ChunkMsg extends Base {
@@ -110,10 +112,21 @@ export interface ChunkMsg extends Base {
   n: number;
   b: string;
 }
+/**
+ * Added after 0.6.0: one part `i` of `n` of the still or shared sound `h`, like a chunk but up to 6,000 bytes. Only relays
+ * carry it (it fits no LAN packet), and an older app never sees it: its relay transport drops content this long.
+ */
+export interface BlobMsg extends Base {
+  t: 'blob';
+  h: string;
+  i: number;
+  n: number;
+  b: string;
+}
 export interface ByeMsg extends Base {
   t: 'bye';
 }
-export type RoomMessage = PresenceMsg | PingMsg | EmoteMsg | TextMsg | AliveMsg | VoteMsg | BallotMsg | WantMsg | ChunkMsg | ByeMsg;
+export type RoomMessage = PresenceMsg | PingMsg | EmoteMsg | TextMsg | AliveMsg | VoteMsg | BallotMsg | WantMsg | ChunkMsg | BlobMsg | ByeMsg;
 
 // C0/C1 controls, zero-width characters, bidi marks, embeddings and isolates, BOM, line/paragraph separators,
 // soft hyphen, combining grapheme joiner, Arabic letter mark, Mongolian vowel separator and the Hangul fillers
@@ -153,6 +166,9 @@ export const SOUND_CHUNKS_MAX = 22;
 const CHUNKS_MAX = Math.max(EMOTE_CHUNKS_MAX, SOUND_CHUNKS_MAX);
 /** Chunk indexes in a `want`'s `need`: at most this many entries, each below the largest chunk count. */
 export const EMOTE_NEED_MAX = 64;
+/** Blob `b` is at most this many base64 characters (6,000 bytes); 3 parts carry a full 16 KB shared sound. */
+export const BLOB_B64_MAX = 8000;
+export const BLOB_PARTS_MAX = 3;
 const B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 /** 32 raw bytes in base64. */
 const PK_RE = /^[A-Za-z0-9+/]{43}=$/;
@@ -245,11 +261,11 @@ export function validateMessage(raw: unknown): RoomMessage | null {
       return isVoteId(id) && typeof yes === 'boolean' ? { t, ...base, id, yes } : null;
     }
     case 'want': {
-      const { to, h, need } = raw;
+      const { to, h, need, big } = raw;
       if (typeof to !== 'string' || !/^[0-9a-f]{16}$/.test(to) || typeof h !== 'string' || !HASH_RE.test(h)) return null;
       if (!Array.isArray(need) || need.length > EMOTE_NEED_MAX) return null;
       if (!need.every((v) => isUint(v) && (v as number) < CHUNKS_MAX)) return null;
-      return { t, ...base, to, h, need: [...new Set(need)] };
+      return { t, ...base, to, h, need: [...new Set(need)], ...(big === true ? { big } : {}) };
     }
     case 'chunk': {
       const { h, i, n, b } = raw;
@@ -257,6 +273,13 @@ export function validateMessage(raw: unknown): RoomMessage | null {
       if (!isUint(n) || (n as number) < 1 || (n as number) > CHUNKS_MAX) return null;
       if (!isUint(i) || (i as number) >= (n as number)) return null;
       if (typeof b !== 'string' || b.length > EMOTE_CHUNK_B64_MAX || b.length % 4 !== 0 || !B64_RE.test(b)) return null;
+      return { t, ...base, h, i: i as number, n: n as number, b };
+    }
+    case 'blob': {
+      const { h, i, n, b } = raw;
+      if (typeof h !== 'string' || !HASH_RE.test(h)) return null;
+      if (!isUint(n) || (n as number) < 1 || (n as number) > BLOB_PARTS_MAX || !isUint(i) || (i as number) >= (n as number)) return null;
+      if (typeof b !== 'string' || b.length > BLOB_B64_MAX || b.length % 4 !== 0 || !B64_RE.test(b)) return null;
       return { t, ...base, h, i: i as number, n: n as number, b };
     }
     case 'bye':

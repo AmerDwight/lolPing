@@ -1,10 +1,10 @@
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  ASSEMBLY_TIMEOUT_MS, EMOTE_CHUNK_BYTES, EmoteTransfer, LAN_TOTAL_CHUNKS_PER_TICK, MAX_ASSEMBLIES, MAX_PENDING_BYTES,
+  ASSEMBLY_TIMEOUT_MS, BLOB_PART_BYTES, EMOTE_CHUNK_BYTES, EmoteTransfer, LAN_TOTAL_CHUNKS_PER_TICK, MAX_ASSEMBLIES, MAX_PENDING_BYTES,
   REASKS_MAX, type BlobKind, type EmoteTransferDeps,
 } from '../../src/main/emoteTransfer';
-import { EMOTE_CHUNKS_MAX, SOUND_CHUNKS_MAX, type ChunkMsg, type WantMsg } from '../../src/shared/roomProtocol';
+import { EMOTE_CHUNKS_MAX, SOUND_CHUNKS_MAX, type BlobMsg, type ChunkMsg, type WantMsg } from '../../src/shared/roomProtocol';
 import { opusSound } from './fixtures/opusSample';
 
 const ascii = (s: string): number[] => [...s].map((c) => c.charCodeAt(0));
@@ -21,11 +21,15 @@ const hashOf = (b: Uint8Array): string => createHash('sha256').update(b).digest(
 
 /** The member whose custom emote we are receiving. */
 const ANNOUNCER = 'aaaaaaaaaaaaaaaa';
+/** Long enough for the first want's two re-asks, 3 s apart. */
+const REASK_MS_TWICE = 6200;
 /** The member receiving our still, in the serving tests. */
 const REQUESTER = 'bbbbbbbbbbbbbbbb';
 
 const chunkOf = (h: string, i: number, n: number, part: Uint8Array, peer = ANNOUNCER): ChunkMsg =>
   ({ peer, seq: 1, ts: 0, t: 'chunk', h, i, n, b: Buffer.from(part).toString('base64') });
+const blobOf = (h: string, i: number, n: number, part: Uint8Array, peer = ANNOUNCER): BlobMsg =>
+  ({ peer, seq: 1, ts: 0, t: 'blob', h, i, n, b: Buffer.from(part).toString('base64') });
 const wantOf = (h: string, need: number[]): WantMsg =>
   ({ peer: REQUESTER, seq: 1, ts: 0, t: 'want', to: ANNOUNCER, h, need });
 
@@ -489,5 +493,111 @@ describe('EmoteTransfer: shared sounds', () => {
     h.t.onWant(wantOf(hash, []));
     await vi.advanceTimersByTimeAsync(2000);
     expect(sentFile(h.out.slice(2), hash)).toEqual(sound);
+  });
+});
+
+describe('EmoteTransfer: blob parts over relays', () => {
+  const partsOf = (bytes: Uint8Array): Uint8Array[] =>
+    Array.from({ length: Math.ceil(bytes.length / BLOB_PART_BYTES) }, (_, i) => bytes.subarray(i * BLOB_PART_BYTES, (i + 1) * BLOB_PART_BYTES));
+
+  it('says blob parts are welcome when it asks over a relay, never over LAN, and assembles them', () => {
+    const h = harness();
+    const sound = opusSound(5, 4, 60); // three parts
+    const image = still(600, 4);
+    h.routes.set(ANNOUNCER, 'shared');
+    h.routes.set(REQUESTER, 'lan');
+    h.t.announced(ANNOUNCER, [hashOf(image)], [hashOf(sound)]);
+    h.t.announced(REQUESTER, [hashOf(still(600, 5))]);
+    expect(h.out.map((o) => [o.kind, o.body.big])).toEqual([['shared', true], ['shared', true], ['lan', undefined]]);
+
+    const parts = partsOf(sound);
+    expect(parts).toHaveLength(3);
+    parts.forEach((part, i) => h.t.onBlob(blobOf(hashOf(sound), i, 3, part)));
+    expect(h.cache.get(hashOf(sound))).toEqual(sound);
+    expect(h.kinds.get(hashOf(sound))).toBe('sound');
+  });
+
+  it('finishes from whichever arrives whole first, chunks or blob parts, and checks the result the same way', () => {
+    const h = harness();
+    const image = still(EMOTE_CHUNK_BYTES * 2, 6);
+    const hash = hashOf(image);
+    h.routes.set(ANNOUNCER, 'shared');
+    h.t.announced(ANNOUNCER, [hash]);
+    h.t.onChunk(chunkOf(hash, 0, 2, image.subarray(0, EMOTE_CHUNK_BYTES))); // someone on an older app asked too
+    h.t.onBlob(blobOf(hash, 0, 1, image));
+    expect(h.cache.get(hash)).toEqual(image);
+    h.t.onChunk(chunkOf(hash, 1, 2, image.subarray(EMOTE_CHUNK_BYTES))); // the straggler opens nothing
+    expect(h.t.stats.assembling).toBe(0);
+
+    const wrong = still(EMOTE_CHUNK_BYTES * 2, 7);
+    h.t.announced(ANNOUNCER, [hashOf(wrong)]);
+    h.t.onBlob(blobOf(hashOf(wrong), 0, 1, image)); // not the bytes the hash names
+    expect(h.cache.has(hashOf(wrong))).toBe(false);
+  });
+
+  it('answers a relay want that welcomes blob parts with those, three for a full sound, and an older want with chunks', async () => {
+    const h = harness();
+    const sound = opusSound(5, 8, 60);
+    const hash = hashOf(sound);
+    h.files.set(hash, sound);
+    h.routes.set(REQUESTER, 'shared');
+    h.setSounds([hash]);
+    h.setTokens(1000);
+    h.t.onWant({ ...wantOf(hash, []), big: true });
+    await vi.advanceTimersByTimeAsync(1000);
+    const sent = h.out.filter((o) => o.body.h === hash);
+    expect(sent.map((o) => o.body.t)).toEqual(['blob', 'blob', 'blob']);
+    expect(new Uint8Array(Buffer.concat(sent.map((o) => Buffer.from(o.body.b as string, 'base64'))))).toEqual(sound);
+
+    h.out.length = 0;
+    h.t.onWant(wantOf(hash, [])); // an app that doesn't read blob parts
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(h.out.every((o) => o.body.t === 'chunk')).toBe(true);
+    expect(sentFile(h.out, hash)).toEqual(sound);
+  });
+
+  it('answers a LAN want in chunks even when it welcomes blob parts: they fit no LAN packet', async () => {
+    const h = harness();
+    const image = still(EMOTE_CHUNK_BYTES * 2, 9);
+    h.files.set(hashOf(image), image);
+    h.routes.set(REQUESTER, 'lan');
+    h.setAnnounced([hashOf(image)]);
+    h.t.onWant({ ...wantOf(hashOf(image), []), big: true });
+    await vi.advanceTimersByTimeAsync(200);
+    expect(h.out.map((o) => o.body.t)).toEqual(['chunk', 'chunk']);
+  });
+
+  it('does not re-ask while the announcer is sending something else, then asks once it has gone quiet', async () => {
+    const h = harness();
+    const first = still(600, 10);
+    const second = still(600, 11);
+    h.routes.set(ANNOUNCER, 'shared');
+    h.setTokens(1000);
+    h.t.announced(ANNOUNCER, [hashOf(first), hashOf(second), hashOf(still(600, 12))]);
+    h.out.length = 0;
+    // The announcer works through its queue: a part of something arrives every two seconds, never of the third still.
+    await vi.advanceTimersByTimeAsync(2000);
+    h.t.onBlob(blobOf(hashOf(first), 0, 1, first));
+    await vi.advanceTimersByTimeAsync(2000);
+    h.t.onBlob(blobOf(hashOf(second), 0, 1, second));
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(h.out).toHaveLength(0); // six seconds without its own bytes, and not one want spent
+
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(h.out.map((o) => o.body)).toEqual([expect.objectContaining({ t: 'want', need: [], big: true })]);
+  });
+
+  it('falls back to chunks from the second re-ask, in case the relays refuse the longer messages', async () => {
+    const h = harness();
+    const image = still(EMOTE_CHUNK_BYTES * 2, 13);
+    const hash = hashOf(image);
+    h.routes.set(ANNOUNCER, 'shared');
+    h.setTokens(1000);
+    h.t.announced(ANNOUNCER, [hash]);
+    await vi.advanceTimersByTimeAsync(REASK_MS_TWICE);
+    expect(h.out.map((o) => o.body.big)).toEqual([true, true, undefined]);
+    h.t.onChunk(chunkOf(hash, 0, 2, image.subarray(0, EMOTE_CHUNK_BYTES)));
+    h.t.onChunk(chunkOf(hash, 1, 2, image.subarray(EMOTE_CHUNK_BYTES)));
+    expect(h.cache.get(hash)).toEqual(image);
   });
 });

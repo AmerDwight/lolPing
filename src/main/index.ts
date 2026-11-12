@@ -344,6 +344,7 @@ function start(): void {
   room.on('emotes', (peer: string, hashes: string[], sounds: string[]) => transfer.announced(peer, hashes, sounds));
   room.on('want', (w: Parameters<EmoteTransfer['onWant']>[0]) => transfer.onWant(w));
   room.on('chunk', (c: Parameters<EmoteTransfer['onChunk']>[0]) => transfer.onChunk(c));
+  room.on('blob', (c: Parameters<EmoteTransfer['onBlob']>[0]) => transfer.onBlob(c));
   room.on('memberGone', (peer: string) => transfer.memberGone(peer));
   const roomState = (): RoomState => {
     const all = screen.getAllDisplays();

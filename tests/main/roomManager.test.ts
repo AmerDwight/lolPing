@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  makeIdentity, open, peerIdOf, publicKeyOf, seal, signBody, verifyBody, type RoomIdentity, type RoomKeys,
+  makeIdentity, MAX_PACKET, MAX_SHARED_PACKET, open, peerIdOf, publicKeyOf, seal, signBody, verifyBody, type RoomIdentity, type RoomKeys,
 } from '../../src/main/roomCrypto';
 import {
   MAX_MEMBERS, RoomManager, type RemoteEmote, type RemotePing, type RemoteText, type RoomToast,
@@ -677,6 +677,42 @@ describe('internet over a shared transport', () => {
     await vi.advanceTimersByTimeAsync(3000);
     expect(inet.state().phase).toBe('active');
   }
+
+  it('takes a long blob part from a relay only: never from LAN, and never any other message that long', async () => {
+    await joinNow();
+    const blobs: RoomMessage[] = [];
+    const texts: unknown[] = [];
+    inet.on('blob', (b: RoomMessage) => blobs.push(b));
+    inet.on('remoteText', (t: unknown) => texts.push(t));
+    const far = new Remote('2222222222222222', 'net:b', lan);
+    netPresence(far);
+    const near = new Remote('1111111111111111', 'lan:a', lan);
+    near.presence();
+    const long = (r: Remote, m: Record<string, unknown>): Buffer =>
+      seal(KEYS.msgKey, encodeMessage({ peer: r.peer, seq: ++r.seq, ts: Date.now(), ...m } as RoomMessage), MAX_SHARED_PACKET);
+    const part = { t: 'blob', h: '0123456789abcdef0123456789abcdef', i: 0, n: 3, b: Buffer.alloc(6000, 5).toString('base64') };
+
+    net.deliver(far.key, long(far, part));
+    expect(blobs).toHaveLength(1);
+    expect(blobs[0]).toMatchObject({ t: 'blob', peer: far.peer, i: 0, n: 3 });
+    lan.deliver(near.key, long(near, part)); // no LAN packet is that long
+    expect(blobs).toHaveLength(1);
+    // A short message padded past the ordinary cap is refused even from a relay; unknown fields would otherwise carry it.
+    net.deliver(far.key, long(far, { t: 'text', text: 'hi', d: 1, x: 0.5, y: 0.5, pad: 'x'.repeat(4000) }));
+    expect(texts).toHaveLength(0);
+  });
+
+  it('seals a blob part for relays at its own cap, and still refuses anything else that long', async () => {
+    await joinNow();
+    netPresence(new Remote('2222222222222222', 'net:b', lan));
+    net.sent = [];
+    const b = Buffer.alloc(6000, 5).toString('base64');
+    inet.broadcastShared({ t: 'blob', h: '0123456789abcdef0123456789abcdef', i: 0, n: 3, b });
+    inet.broadcastShared({ t: 'chunk', h: '0123456789abcdef0123456789abcdef', i: 0, n: 3, b });
+    expect(net.sent).toHaveLength(1);
+    expect(net.sent[0].packet.length).toBeGreaterThan(MAX_PACKET);
+    expect(decodeMessage(open(KEYS.msgKey, net.sent[0].packet, MAX_SHARED_PACKET)!)).toMatchObject({ t: 'blob', b });
+  });
 
   it('sends a ping once over a shared transport, however many members use it', async () => {
     await joinNow();

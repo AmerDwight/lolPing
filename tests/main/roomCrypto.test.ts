@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  deriveRoomKeys, makeIdentity, MAX_PACKET, open, peerIdOf, publicKeyOf, seal, signBody, verifyBody,
+  deriveRoomKeys, makeIdentity, MAX_PACKET, MAX_SHARED_PACKET, open, peerIdOf, publicKeyOf, seal, signBody, verifyBody,
 } from '../../src/main/roomCrypto';
 import { PEER_RE } from '../../src/shared/roomProtocol';
 
@@ -50,6 +50,15 @@ describe('seal / open', () => {
 
   it('refuses to seal more than fits in a packet', () => {
     expect(() => seal(key, new Uint8Array(MAX_PACKET))).toThrow();
+  });
+
+  it('seals and opens a relay-only packet up to its own cap, only when asked to', () => {
+    const long = new Uint8Array(8000).fill(3);
+    expect(() => seal(key, long)).toThrow();
+    const packet = seal(key, long, MAX_SHARED_PACKET);
+    expect(open(key, packet)).toBeNull(); // a LAN packet may never be this long
+    expect(open(key, packet, MAX_SHARED_PACKET)).toEqual(Buffer.from(long));
+    expect(() => seal(key, new Uint8Array(MAX_SHARED_PACKET), MAX_SHARED_PACKET)).toThrow();
   });
 });
 

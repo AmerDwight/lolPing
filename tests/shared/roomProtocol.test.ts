@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { MAX_PACKET, open, seal } from '../../src/main/roomCrypto';
+import { MAX_PACKET, MAX_SHARED_PACKET, open, seal } from '../../src/main/roomCrypto';
 import {
   isTagColor, isTagRgb, nearestTagColor, readableTagRgb, sameTagRgb, TAG_COLORS, tagColorCss, tagHex, tagRgbFromHex, tagWire,
 } from '../../src/shared/roomColors';
 import {
   clampNameInput, decodeMessage, decodeSigned, encodeMessage, joinSigned, splitSigned, isOlderThan, isVoteId, MAX_TEXT, sanitizeName, sanitizeText, validateMessage,
-  type AliveMsg, type BallotMsg, type ChunkMsg, type EmoteMsg, type PingMsg, type PresenceMsg, type RoomMessage, type TextMsg,
+  type AliveMsg, type BallotMsg, type BlobMsg, type ChunkMsg, type EmoteMsg, type PingMsg, type PresenceMsg, type RoomMessage, type TextMsg,
   type VoteMsg, type WantMsg,
 } from '../../src/shared/roomProtocol';
 
@@ -317,6 +317,30 @@ describe('want and chunk messages', () => {
     ['base64 not a string', { ...chunk, b: 9 }],
   ])('rejects %s', (_label, raw) => {
     expect(validateMessage(raw)).toBeNull();
+  });
+
+  it('keeps a want’s big flag only when it is true, and reads an older want as asking for chunks', () => {
+    expect(decodeMessage(encodeMessage({ ...want, need: [], big: true }))).toEqual({ ...want, need: [], big: true });
+    for (const big of [false, 1, 'yes', undefined]) expect(validateMessage({ ...want, big })).toEqual(want);
+  });
+
+  it('round-trips a blob part of 6,000 bytes, which is more than a LAN packet but fits a relay-only one', () => {
+    const blob: BlobMsg = { ...base, seq: Number.MAX_SAFE_INTEGER, t: 'blob', h: hash, i: 2, n: 3, b: Buffer.alloc(6000, 9).toString('base64') };
+    expect(decodeMessage(encodeMessage(blob))).toEqual(blob);
+    expect(() => seal(Buffer.alloc(32), encodeMessage(blob))).toThrow();
+    expect(seal(Buffer.alloc(32), encodeMessage(blob), MAX_SHARED_PACKET).length).toBeLessThanOrEqual(MAX_SHARED_PACKET);
+  });
+
+  it.each([
+    ['part count 0', { n: 0 }],
+    ['part count 4', { n: 4 }],
+    ['index at the count', { i: 3 }],
+    ['hash upper-case', { h: hash.toUpperCase() }],
+    ['base64 over 8000 characters', { b: 'QQ'.repeat(4001) }],
+    ['base64 of a ragged length', { b: 'QQQ' }],
+    ['base64 not a string', { b: 9 }],
+  ])('rejects a blob with %s', (_label, bad) => {
+    expect(validateMessage({ ...base, t: 'blob', h: hash, i: 0, n: 3, b: 'QUJD', ...bad })).toBeNull();
   });
 
   it('accepts an empty need (all of it) and a full-size chunk', () => {
