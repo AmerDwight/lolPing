@@ -281,7 +281,7 @@ describe('members', () => {
 
   /** A presence sealed with the room key but stamped an hour ago: a captured packet replayed later, or a bad clock. */
   const stalePresence = (r: Remote, name = 'Old') => lan.deliver(r.key, seal(KEYS.msgKey, encodeMessage({
-    t: 'presence', peer: r.peer, seq: ++r.seq, ts: Date.now() - 3_600_000, proto: 1, app: '1', name, color: 0, status: 'on', em: [], nf: [],
+    t: 'presence', peer: r.peer, seq: ++r.seq, ts: Date.now() - 3_600_000, proto: 1, app: '1', name, color: 0, status: 'on', em: [], sn: [], nf: [],
   })));
 
   it('never adds, answers or counts a member from stale packets, so replays cannot fill the room', async () => {
@@ -860,20 +860,22 @@ describe('internet over a shared transport', () => {
 
 
 describe('emote transfers', () => {
-  let emotes: { peer: string; hashes: string[] }[];
+  let emotes: { peer: string; hashes: string[]; sounds: string[] }[];
   let wants: RoomMessage[];
   let chunks: RoomMessage[];
   const hash = '0123456789abcdef0123456789abcdef';
+  const sound = 'fedcba9876543210fedcba9876543210';
 
-  /** The room under test, with the self peer id pinned so `want` addressing can be asserted. */
-  const make = (): RoomManager => {
+  /** The room under test, with the self peer id pinned so `want` addressing can be asserted. `sounds`: what it announces beside its hash. */
+  const make = (sounds?: () => string[]): RoomManager => {
     const r = new RoomManager({
       transports: [lan], now: () => Date.now(), randomBytes: (n) => new Uint8Array(n).fill(0xab),
       deriveKeys: async () => KEYS, appVersion: '0.5.1', profile: () => profile,
       resolveTarget: (d) => (d === 1 ? { displayId: 100, width: 1920, height: 1080 } : null),
       announceEmotes: () => [hash],
+      ...(sounds ? { announceSounds: sounds } : {}),
     });
-    r.on('emotes', (peer: string, hashes: string[]) => emotes.push({ peer, hashes }));
+    r.on('emotes', (peer: string, hashes: string[], heard: string[]) => emotes.push({ peer, hashes, sounds: heard }));
     r.on('want', (w: RoomMessage) => wants.push(w));
     r.on('chunk', (c: RoomMessage) => chunks.push(c));
     return r;
@@ -901,9 +903,34 @@ describe('emote transfers', () => {
     await joinActive();
     const alex = new Remote('1111111111111111', 'lan:a', lan);
     alex.presence({ em: [hash] });
-    expect(emotes.at(-1)).toEqual({ peer: '1111111111111111', hashes: [hash] });
+    expect(emotes.at(-1)).toEqual({ peer: '1111111111111111', hashes: [hash], sounds: [''] });
     const mine = sentMessages('lan:a').find((m) => m.t === 'presence');
     expect(mine).toMatchObject({ em: [hash] });
+  });
+
+  /** Our presences as they went out, before validation fills in what they left out. */
+  const rawPresences = (): string[] =>
+    lan.sent.map((s) => open(KEYS.msgKey, s.packet)!.toString('utf8')).filter((text) => text.includes('"t":"presence"'));
+
+  it('announces each hash’s shared sound beside it, and reads a member’s', async () => {
+    room.quit();
+    room = make(() => [sound]);
+    await joinActive();
+    const alex = new Remote('1111111111111111', 'lan:a', lan);
+    alex.presence({ em: [hash], sn: [sound] });
+    expect(emotes.at(-1)).toEqual({ peer: '1111111111111111', hashes: [hash], sounds: [sound] });
+    expect(sentMessages('lan:a').find((m) => m.t === 'presence')).toMatchObject({ em: [hash], sn: [sound] });
+  });
+
+  it('leaves sounds out of a presence when no announced emote has one, or when they don’t line up with the hashes', async () => {
+    for (const sounds of [undefined, () => [''], () => [sound, sound]]) {
+      room.quit();
+      lan.sent = [];
+      room = make(sounds);
+      await joinActive();
+      expect(rawPresences().length).toBeGreaterThan(0);
+      expect(rawPresences().some((text) => text.includes('"sn"'))).toBe(false);
+    }
   });
 
   it('hands a want addressed to us to the transfer layer, and drops one aimed elsewhere', async () => {
@@ -1252,7 +1279,7 @@ describe('signed members', () => {
     const other = makeIdentity(new Uint8Array(32).fill(10));
     const body = encodeMessage({
       peer: liar.peer, seq: 1, ts: Date.now(), t: 'presence', proto: 1, app: '0.5.2', name: 'Liar', color: 1, status: 'on',
-      em: [], nf: [], pk: other.pk.toString('base64'),
+      em: [], sn: [], nf: [], pk: other.pk.toString('base64'),
     });
     lan.deliver('lan:l', seal(KEYS.msgKey, new TextEncoder().encode(joinSigned(new TextDecoder().decode(body), signBody(other, body)))));
     expect(members()).not.toContain(liar.peer);

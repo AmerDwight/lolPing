@@ -9,10 +9,12 @@ import { LanTransport } from '../../src/main/lanTransport';
 import { deriveRoomKeys } from '../../src/main/roomCrypto';
 import { RoomManager } from '../../src/main/roomManager';
 import { makeRoomCode } from '../../src/shared/roomCode';
+import { opusSound } from './fixtures/opusSample';
 
 // Two rooms on loopback, as the lanRoom test does: no broadcast, so each transport seeds the other's port.
 // One side owns an imported emote; the other must end up with the verified still in its cache — the whole
 // announce → want → chunks → hash-check path over real UDP, which is the report of issue #57/#49's fix.
+// The emote's shared sound takes the same path into the sound cache.
 const A_PORT = 47_521;
 const B_PORT = 47_522;
 const CODE = makeRoomCode(randomBytes(9));
@@ -38,14 +40,20 @@ interface Side {
   room: RoomManager;
   transfer: EmoteTransfer;
   cache: EmoteCache;
+  sounds: EmoteCache;
+  /** The members whose presence this side has heard. */
+  heard: Set<string>;
   dir: string;
   files: Map<string, Uint8Array>;
 }
 
-function side(port: number, other: number, name: string, announced: () => string[]): Side {
+/** `announcedSounds`: for each announced hash, its shared sound or ''. This side keeps both kinds as `<hash>.<type>` in its library. */
+function side(port: number, other: number, name: string, announced: () => string[], announcedSounds: () => string[] = () => []): Side {
   const dir = mkdtempSync(join(tmpdir(), 'lolping-room-emotes-'));
   const libraryDir = join(dir, 'emotes');
   const cache = new EmoteCache(join(dir, 'emote-cache'), Date.now);
+  const sounds = new EmoteCache(join(dir, 'emote-cache'), Date.now, 'ogg');
+  const heard = new Set<string>();
   const files = new Map<string, Uint8Array>();
   const lan = new LanTransport({ port, bindAddress: '127.0.0.1', broadcast: false, seeds: [{ host: '127.0.0.1', port: other }] });
   const room = new RoomManager({
@@ -57,30 +65,35 @@ function side(port: number, other: number, name: string, announced: () => string
     profile: () => ({ name, color: 1, rgb: null, limit: 0, nf: [] }),
     resolveTarget: () => ({ displayId: 1, width: 1000, height: 500 }),
     announceEmotes: announced,
+    announceSounds: announcedSounds,
   });
   const transfer = new EmoteTransfer({
     now: Date.now,
     enabled: () => true,
-    have: (h) => files.has(h) || cache.has(h),
-    still: (h) => {
+    have: (h, kind) => files.has(h) || (kind === 'still' ? cache : sounds).has(h),
+    blob: (h, kind) => {
       try {
-        return new Uint8Array(readFileSync(join(libraryDir, `${h}.webp`)));
+        return new Uint8Array(readFileSync(join(libraryDir, `${h}.${kind === 'still' ? 'webp' : 'ogg'}`)));
       } catch {
         return null;
       }
     },
     announced,
-    put: (h, b) => void cache.put(h, b),
+    announcedSounds: () => announcedSounds().filter((h) => h !== ''),
+    put: (h, b, kind) => void (kind === 'still' ? cache : sounds).put(h, b),
     routeOf: (peer) => room.routeKind(peer),
     sendToLan: (peer, body) => room.sendToLan(peer, body),
     broadcastShared: (body) => room.broadcastShared(body),
     spareSharedToken: () => true,
   });
-  room.on('emotes', (peer: string, hashes: string[]) => transfer.announced(peer, hashes));
+  room.on('emotes', (peer: string, hashes: string[], shared: string[]) => {
+    heard.add(peer);
+    transfer.announced(peer, hashes, shared);
+  });
   room.on('want', (w: Parameters<EmoteTransfer['onWant']>[0]) => transfer.onWant(w));
   room.on('chunk', (c: Parameters<EmoteTransfer['onChunk']>[0]) => transfer.onChunk(c));
   room.on('memberGone', (peer: string) => transfer.memberGone(peer));
-  return { room, transfer, cache, dir, files };
+  return { room, transfer, cache, sounds, heard, dir, files };
 }
 
 let open: Side[] = [];
@@ -110,5 +123,24 @@ describe('a custom emote still travels over real UDP', () => {
     const got = join(b.dir, 'emote-cache', `${hash}.webp`);
     expect(existsSync(got)).toBe(true);
     expect(new Uint8Array(readFileSync(got))).toEqual(bytes);
+  }, 20_000);
+
+  it('carries the emote’s shared sound the same way, and the receiver knows whose emote it belongs to', async () => {
+    const bytes = still(3000, 8);
+    const hash = createHash('sha256').update(bytes).digest('hex').slice(0, 32);
+    const sound = opusSound(5, 3, 60); // more chunks than a still can have
+    const soundHash = createHash('sha256').update(sound).digest('hex').slice(0, 32);
+    const a = side(A_PORT, B_PORT, 'Ana', () => [hash], () => [soundHash]);
+    mkdirSync(join(a.dir, 'emotes'), { recursive: true });
+    writeFileSync(join(a.dir, 'emotes', `${hash}.webp`), bytes);
+    writeFileSync(join(a.dir, 'emotes', `${soundHash}.ogg`), sound);
+    const b = side(B_PORT, A_PORT, 'Ben', () => []);
+    open.push(a, b);
+    await Promise.all([a.room.join(CODE), b.room.join(CODE)]);
+
+    await until(() => b.cache.has(hash) && b.sounds.has(soundHash));
+    expect(new Uint8Array(readFileSync(join(b.dir, 'emote-cache', `${soundHash}.ogg`)))).toEqual(sound);
+    expect([...b.heard].map((peer) => b.transfer.soundFor(peer, hash))).toEqual([soundHash]);
+    expect(a.sounds.has(soundHash)).toBe(false); // nothing came back to the sender
   }, 20_000);
 });

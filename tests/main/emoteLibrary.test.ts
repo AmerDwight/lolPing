@@ -4,8 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resolveEmoteFile } from '../../src/main/appProtocol';
-import { EmoteLibrary, emoteFileFrom, resolveEmoteArt } from '../../src/main/emoteLibrary';
-import { customAnimUrl, customStillUrl, type CustomEmote, type EmoteFile } from '../../src/shared/emotes';
+import { checkShared, EmoteLibrary, emoteFileFrom, resolveEmoteArt } from '../../src/main/emoteLibrary';
+import { customAnimUrl, customStillUrl, SHARED_SOUND_MAX_BYTES, type CustomEmote, type EmoteFile } from '../../src/shared/emotes';
+import { opusSound } from './fixtures/opusSample';
 
 vi.mock('electron', () => ({ net: {}, protocol: {} }));
 
@@ -182,11 +183,36 @@ describe('EmoteLibrary', () => {
     const s = still();
     const hash = hashOf(s);
     await lib.save({ name: 'x', still: s }, []);
-    expect(await lib.setSound(`c:${hash}`, ogg())).toBeNull();
+    expect(await lib.setSound(`c:${hash}`, ogg())).toEqual({ ok: true, share: null });
     expect(files(lib.dir)).toEqual([`${hash}.sound.ogg`, `${hash}.webp`]);
-    expect(await lib.setSound(`c:${hash}`, mp3())).toBeNull(); // the OGG would be served first: it goes
+    expect(await lib.setSound(`c:${hash}`, mp3())).toEqual({ ok: true, share: null }); // the OGG would be served first: it goes
     expect(files(lib.dir)).toEqual([`${hash}.sound.mp3`, `${hash}.webp`]);
-    expect(await lib.setSound(`c:${hash}`, null)).toBeNull();
+    expect(await lib.setSound(`c:${hash}`, null)).toEqual({ ok: true, share: null });
+    expect(files(lib.dir)).toEqual([`${hash}.webp`]);
+  });
+
+  it('keeps the copy for rooms next to the sound and hands back its hash', async () => {
+    const lib = new EmoteLibrary(join(tempDir(), 'emotes'));
+    const hash = hashOf(still());
+    await lib.save({ name: 'x', still: still() }, []);
+    const share = opusSound(1);
+    expect(await lib.setSound(`c:${hash}`, mp3(), share)).toEqual({ ok: true, share: hashOf(share) });
+    expect(files(lib.dir)).toEqual([`${hash}.share.ogg`, `${hash}.sound.mp3`, `${hash}.webp`]);
+    expect(new Uint8Array(readFileSync(join(lib.dir, `${hash}.share.ogg`)))).toEqual(share);
+  });
+
+  it('saves the sound without a copy that fails its checks, and drops the copy of the sound it replaces', async () => {
+    const lib = new EmoteLibrary(join(tempDir(), 'emotes'));
+    const hash = hashOf(still());
+    await lib.save({ name: 'x', still: still() }, []);
+    await lib.setSound(`c:${hash}`, mp3(), opusSound(1));
+    // An OGG that is not Opus, a sound that decodes to minutes, and one over the size cap: the old copy must not go on being shared.
+    for (const bad of [ogg(), opusSound(60, 1, 2), opusSound(5, 1, 80)]) {
+      expect(await lib.setSound(`c:${hash}`, mp3(), bad)).toEqual({ ok: true, share: null });
+      expect(files(lib.dir)).toEqual([`${hash}.sound.mp3`, `${hash}.webp`]);
+      await lib.setSound(`c:${hash}`, mp3(), opusSound(1));
+    }
+    expect(await lib.setSound(`c:${hash}`, null)).toEqual({ ok: true, share: null });
     expect(files(lib.dir)).toEqual([`${hash}.webp`]);
   });
 
@@ -195,9 +221,9 @@ describe('EmoteLibrary', () => {
     const hash = hashOf(still());
     await lib.save({ name: 'x', still: still() }, []);
     await lib.setSound(`c:${hash}`, ogg());
-    expect(await lib.setSound(`c:${hash}`, png())).toBe('type');
-    expect(await lib.setSound(`c:${hash}`, ogg(1_048_577))).toBe('size');
-    expect(await lib.setSound('../settings', ogg())).toBe('type');
+    expect(await lib.setSound(`c:${hash}`, png(), opusSound(1))).toEqual({ ok: false, error: 'type' });
+    expect(await lib.setSound(`c:${hash}`, ogg(1_048_577))).toEqual({ ok: false, error: 'size' });
+    expect(await lib.setSound('../settings', ogg())).toEqual({ ok: false, error: 'type' });
     expect(files(lib.dir)).toEqual([`${hash}.sound.ogg`, `${hash}.webp`]);
   });
 
@@ -205,7 +231,7 @@ describe('EmoteLibrary', () => {
     const lib = new EmoteLibrary(join(tempDir(), 'emotes'));
     const id = `c:${hashOf(still())}`;
     await lib.save({ name: 'x', still: still() }, []);
-    await lib.setSound(id, mp3());
+    await lib.setSound(id, mp3(), opusSound(1));
     await lib.remove(id);
     expect(files(lib.dir)).toEqual([]);
   });
@@ -218,6 +244,28 @@ describe('EmoteLibrary', () => {
     rmSync(join(lib.dir, `${a.emote.id.slice(2)}.webp`)); // the animation alone doesn't keep it
     expect(lib.present([a.emote, b.emote, entry(1)])).toEqual([b.emote]);
     expect(new EmoteLibrary(join(tempDir(), 'missing')).present([b.emote])).toEqual([]);
+  });
+});
+
+describe('checkShared', () => {
+  it('accepts mono Ogg Opus within the size and length caps', () => {
+    expect(checkShared(opusSound(5))).toBeNull();
+    expect(checkShared(opusSound(5.2))).toBeNull(); // the picker's slack plus the encoder's delay and padding
+  });
+
+  it('refuses anything that is not Ogg Opus, even when it starts like OGG', () => {
+    expect(checkShared(ogg())).toBe('type');
+    expect(checkShared(mp3())).toBe('type');
+    expect(checkShared(new Uint8Array(0))).toBe('type');
+  });
+
+  it('refuses a copy over the size cap, and a small one whose packets decode to more than a sound may last', () => {
+    const big = opusSound(5, 1, 80);
+    expect(big.length).toBeGreaterThan(SHARED_SOUND_MAX_BYTES);
+    expect(checkShared(big)).toBe('size');
+    const long = opusSound(60, 1, 2);
+    expect(long.length).toBeLessThan(SHARED_SOUND_MAX_BYTES);
+    expect(checkShared(long)).toBe('long');
   });
 });
 
@@ -254,7 +302,7 @@ describe('resolveEmoteArt', () => {
     expect(resolveEmoteArt(picked.id, [picked], false)).toEqual({ kind: 'custom', url: `lolping://emotes/${hash}.webp`, animated: false, fx: 5 });
   });
 
-  it('plays our own emote’s sound, never a room member’s', () => {
+  it('plays our own emote’s sound; a room member’s is never ours, even for the same image', () => {
     const loud: CustomEmote = { ...plain, sound: true };
     const sound = `lolping://emotes/${'cd'.repeat(16)}.sound`;
     expect(resolveEmoteArt(loud.id, [loud], false)).toMatchObject({ kind: 'custom', sound });
@@ -304,6 +352,14 @@ describe('resolveEmoteFile', () => {
     const [b] = setup([`${hash}.webp`], []);
     expect(resolveEmoteFile([b], `/${hash}.sound`)).toBeNull();
     expect(resolveEmoteFile([a], `/${hash}.sound.mp3`)).toBeNull();
+  });
+
+  it('serves a room member’s shared sound under its own hash, and never our own copy for rooms', () => {
+    const [a, b] = setup([`${hash}.share.ogg`, `${hash}.sound.ogg`], [`${hash}.ogg`]);
+    expect(resolveEmoteFile([a, b], `/${hash}.ogg`)).toBe(join(b, `${hash}.ogg`));
+    expect(resolveEmoteFile([a], `/${hash}.ogg`)).toBeNull();
+    expect(resolveEmoteFile([a, b], `/${hash}.share.ogg`)).toBeNull();
+    expect(resolveEmoteFile([a, b], `/${hash}.share`)).toBeNull();
   });
 
   it('serves no other names', () => {

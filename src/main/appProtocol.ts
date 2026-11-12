@@ -10,8 +10,11 @@ import { resolveInside } from './safePath';
  */
 export const APP_SCHEME = 'lolping';
 
-/** The only names lolping://emotes serves: a hash and `.webp` (the still), `.anim` (the animation) or `.sound`. */
-export const EMOTE_URL_RE = /^\/([0-9a-f]{32})\.(webp|anim|sound)$/;
+/**
+ * The only names lolping://emotes serves: a hash and `.webp` (the still), `.anim` (the animation), `.sound` (our own
+ * emote's sound) or `.ogg` (a room member's shared sound, under its own hash).
+ */
+export const EMOTE_URL_RE = /^\/([0-9a-f]{32})\.(webp|anim|sound|ogg)$/;
 
 /** Must run before app 'ready'. */
 export function registerAppScheme(): void {
@@ -25,12 +28,13 @@ export function registerAppScheme(): void {
 /**
  * The file behind a lolping://emotes path, from the first of `dirs` that has it. `.anim` is the `.anim.gif` or `.anim.webp`
  * on disk, or the still when the animation is missing; `.sound` is the `.sound.ogg`, `.mp3` or `.wav`. Null for any other path.
+ * A `.ogg` is only ever a cached shared sound: our own `.share.ogg` copies are named after their emote and never served.
  */
 export function resolveEmoteFile(dirs: readonly string[], urlPath: string): string | null {
   const m = EMOTE_URL_RE.exec(urlPath);
   if (!m) return null;
   const [, hash, kind] = m;
-  const names = kind === 'webp' ? [`${hash}.webp`]
+  const names = kind === 'webp' || kind === 'ogg' ? [`${hash}.${kind}`]
     : kind === 'anim' ? [`${hash}.anim.gif`, `${hash}.anim.webp`, `${hash}.webp`]
       : AUDIO_TYPES.map((t) => `${hash}.sound.${t}`);
   for (const name of names) {

@@ -270,8 +270,11 @@ export interface SettingsApi {
   importEmote(file: EmoteFile): Promise<ImportResult>;
   /** Deletes an imported emote's files and entry; wheel slots that used it fall back. */
   removeEmote(id: EmoteRef): Promise<void>;
-  /** Gives one of our imported emotes a sound (OGG, MP3 or WAV bytes), or takes it away with null. */
-  setEmoteSound(id: EmoteRef, sound: Uint8Array | null): Promise<SoundResult>;
+  /**
+   * Gives one of our imported emotes a sound (OGG, MP3 or WAV bytes), or takes it away with null. `share` is the small
+   * Ogg Opus copy that room members get; without it the sound plays on this computer only.
+   */
+  setEmoteSound(id: EmoteRef, sound: Uint8Array | null, share?: Uint8Array | null): Promise<SoundResult>;
   /** Stores which signature effect the emote plays; undefined puts it back to the plain pop. */
   setEmoteFx(id: EmoteRef, fx: number | undefined): Promise<void>;
   getAbout(): Promise<About>;

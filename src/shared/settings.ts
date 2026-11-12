@@ -1,6 +1,6 @@
 import { DEFAULT_CLICK_EMOTE, DEFAULT_EMOTE_WHEEL } from './emoteCatalog';
 import {
-  CUSTOM_NAME_MAX, MAX_CUSTOM_EMOTES, customHash, isCustomRef, isEmoteFx, normalizeClickEmote, normalizeEmoteWheel,
+  CUSTOM_NAME_MAX, HASH_RE, MAX_CUSTOM_EMOTES, customHash, isCustomRef, isEmoteFx, normalizeClickEmote, normalizeEmoteWheel,
   type CustomEmote, type EmoteRef,
 } from './emotes';
 import { DEFAULT_FEATURES, featureOn, normalizeFeatures, type Features } from './features';
@@ -313,6 +313,7 @@ function customEmotes(raw: unknown): CustomEmote[] {
     out.push({
       id, name, animated: e.animated,
       ...(e.sound === true ? { sound: true } : {}),
+      ...(e.sound === true && typeof e.share === 'string' && HASH_RE.test(e.share) ? { share: e.share } : {}),
       ...(isEmoteFx(e.fx) ? { fx: e.fx } : {}),
     });
   }

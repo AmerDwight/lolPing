@@ -110,8 +110,9 @@ const nameOf = (p: string): string => names.get(p) ?? p;
 const transfer = new EmoteTransfer({
   now: Date.now,
   have: (h) => h === imageHash || received.has(h),
-  still: (h) => (h === imageHash ? image : null),
+  blob: (h, kind) => (kind === 'still' && h === imageHash ? image : null),
   announced: () => (imageHash ? [imageHash] : []),
+  announcedSounds: () => [],
   enabled: () => true,
   put: (h) => {
     received.add(h);

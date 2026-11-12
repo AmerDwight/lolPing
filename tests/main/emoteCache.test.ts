@@ -34,6 +34,22 @@ describe('EmoteCache', () => {
     expect(again.has(HASH(1))).toBe(true);
   });
 
+  it('keeps shared sounds as .ogg under their own caps, in the same folder as the stills', async () => {
+    const sounds = new EmoteCache(dir, () => clock, 'ogg');
+    await cache.put(HASH(1), stillOf(1, 100));
+    expect(await sounds.put(HASH(1), stillOf(2, 50))).toBe(true);
+    expect(await sounds.put(HASH(2), stillOf(3, 50))).toBe(true);
+    expect(readdirSync(dir).sort()).toEqual([`${HASH(1)}.ogg`, `${HASH(1)}.webp`, `${HASH(2)}.ogg`]);
+    expect(cache.has(HASH(2))).toBe(false); // a sound is not a still
+
+    const stillsAgain = new EmoteCache(dir, () => clock);
+    const soundsAgain = new EmoteCache(dir, () => clock, 'ogg');
+    await stillsAgain.present();
+    await soundsAgain.present();
+    expect([stillsAgain.has(HASH(1)), stillsAgain.has(HASH(2))]).toEqual([true, false]);
+    expect([soundsAgain.has(HASH(1)), soundsAgain.has(HASH(2))]).toEqual([true, true]);
+  });
+
   it('refuses a hash that is not 32 hex characters', async () => {
     expect(await cache.put('../escape', stillOf(1, 100))).toBe(false);
     expect(existsSync(dir)).toBe(false);

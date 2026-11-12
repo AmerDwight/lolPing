@@ -328,12 +328,15 @@ export class OverlayManager extends EventEmitter {
     this.send(d.id, 'emote:spawn', { owner: 'preview', art: this.resolveArt(ref, false), x: d.bounds.width / 2, y: d.bounds.height / 2 });
   }
 
-  /** A room member's emote, already mapped onto one of our displays. It replaces their earlier one, whichever display that was on. */
-  spawnRemoteEmote(p: { displayId: number; x: number; y: number; ref: EmoteRef; fx?: number; peer: string; tag: PingTag }): void {
+  /**
+   * A room member's emote, already mapped onto one of our displays. It replaces their earlier one, whichever display that
+   * was on. `sound` is the URL of the sender's shared sound for it, when that has arrived.
+   */
+  spawnRemoteEmote(p: { displayId: number; x: number; y: number; ref: EmoteRef; fx?: number; sound?: string; peer: string; tag: PingTag }): void {
     const art = this.resolveArt(p.ref, true);
-    // The effect is the sender's choice, so the one on their message wins — over a cached still's plain pop, and over
-    // the effect we picked if we happen to have the same image imported.
-    const withFx = art.kind === 'custom' ? { ...art, fx: p.fx ?? 0 } : art;
+    // The effect and the sound are the sender's choice, so theirs win — over a cached still's plain pop and silence, and
+    // over what we picked if we happen to have the same image imported. An image we can't show plays no sound either.
+    const withFx = art.kind === 'custom' ? { ...art, fx: p.fx ?? 0, ...(p.sound ? { sound: p.sound } : {}) } : art;
     this.send(p.displayId, 'emote:spawn', { owner: p.peer, art: withFx, x: p.x, y: p.y, tag: p.tag });
     this.clearElsewhere(p.displayId, p.peer);
   }

@@ -13,6 +13,7 @@ import { SETTINGS_CH } from '../../src/shared/ipc';
 import { MOD } from '../../src/shared/keys';
 import type { AgentProfile, BuiltinProfile } from '../../src/shared/teammate/settings';
 import type { UpdateState } from '../../src/shared/update';
+import { opusSound } from './fixtures/opusSample';
 
 const h = vi.hoisted(() => ({
   handlers: new Map<string, (event: unknown, ...args: unknown[]) => unknown>(),
@@ -148,6 +149,28 @@ describe('settings IPC', () => {
     expect(await call(SETTINGS_CH.emoteSound, idOf(s), null)).toEqual({ ok: true });
     expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cow', animated: false }]);
     expect(readdirSync(library.dir)).toEqual([`${hash}.webp`]);
+  });
+
+  it('stores the hash of the copy for rooms on the entry, and takes it away with the sound or with a sound that has none', async () => {
+    const s = still(4);
+    const hash = idOf(s).slice(2);
+    await call(SETTINGS_CH.emoteImport, { name: 'cow', still: s });
+    const sound = new Uint8Array(300).fill(1);
+    sound.set(ascii('OggS'));
+    const share = opusSound(1);
+    const shareHash = createHash('sha256').update(share).digest('hex').slice(0, 32);
+    expect(await call(SETTINGS_CH.emoteSound, idOf(s), sound, share)).toEqual({ ok: true });
+    expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cow', animated: false, sound: true, share: shareHash }]);
+    expect(readdirSync(library.dir).sort()).toEqual([`${hash}.share.ogg`, `${hash}.sound.ogg`, `${hash}.webp`]);
+    // A replacement sound whose copy isn't Ogg Opus, or isn't bytes at all, is saved but not shared.
+    for (const bad of [sound, 'not bytes', undefined]) {
+      expect(await call(SETTINGS_CH.emoteSound, idOf(s), sound, bad)).toEqual({ ok: true });
+      expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cow', animated: false, sound: true }]);
+      expect(readdirSync(library.dir).sort()).toEqual([`${hash}.sound.ogg`, `${hash}.webp`]);
+      await call(SETTINGS_CH.emoteSound, idOf(s), sound, share);
+    }
+    expect(await call(SETTINGS_CH.emoteSound, idOf(s), null)).toEqual({ ok: true });
+    expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cow', animated: false }]);
   });
 
   it('refuses a sound for an emote that is not ours, or that is not sound bytes', async () => {

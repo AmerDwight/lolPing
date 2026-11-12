@@ -2,9 +2,10 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   ASSEMBLY_TIMEOUT_MS, EMOTE_CHUNK_BYTES, EmoteTransfer, LAN_TOTAL_CHUNKS_PER_TICK, MAX_ASSEMBLIES, MAX_PENDING_BYTES,
-  REASKS_MAX, type EmoteTransferDeps,
+  REASKS_MAX, type BlobKind, type EmoteTransferDeps,
 } from '../../src/main/emoteTransfer';
-import type { ChunkMsg, WantMsg } from '../../src/shared/roomProtocol';
+import { EMOTE_CHUNKS_MAX, SOUND_CHUNKS_MAX, type ChunkMsg, type WantMsg } from '../../src/shared/roomProtocol';
+import { opusSound } from './fixtures/opusSample';
 
 const ascii = (s: string): number[] => [...s].map((c) => c.charCodeAt(0));
 const le16 = (n: number): number[] => [n & 0xff, (n >> 8) & 0xff];
@@ -36,18 +37,23 @@ function harness() {
   const files = new Map<string, Uint8Array>();
   const cache = new Map<string, Uint8Array>();
   const routes = new Map<string, 'lan' | 'shared' | null>();
+  const kinds = new Map<string, BlobKind>(); // what each cached hash was stored as
   const reads = { still: 0 };
-  const state = { enabled: true, tokens: 10, announced: [] as string[] };
+  const state = { enabled: true, tokens: 10, announced: [] as string[], sounds: [] as string[] };
   const deps: EmoteTransferDeps = {
     now: Date.now,
     have: (h) => files.has(h) || cache.has(h),
-    still: (h) => {
+    blob: (h) => {
       reads.still++;
       return files.get(h) ?? null;
     },
     announced: () => state.announced,
+    announcedSounds: () => state.sounds,
     enabled: () => state.enabled,
-    put: (h, b) => void cache.set(h, b),
+    put: (h, b, kind) => {
+      cache.set(h, b);
+      kinds.set(h, kind);
+    },
     routeOf: (peer) => routes.get(peer) ?? null,
     sendToLan: (peer, body) => void out.push({ kind: 'lan', to: peer, body }),
     broadcastShared: (body) => void out.push({ kind: 'shared', body }),
@@ -55,10 +61,11 @@ function harness() {
   };
   const t = new EmoteTransfer(deps);
   return {
-    t, out, cache, files, routes, reads,
+    t, out, cache, kinds, files, routes, reads,
     setEnabled: (on: boolean) => (state.enabled = on),
     setTokens: (n: number) => (state.tokens = n),
     setAnnounced: (list: string[]) => (state.announced = list),
+    setSounds: (list: string[]) => (state.sounds = list),
   };
 }
 
@@ -378,5 +385,109 @@ describe('EmoteTransfer: audit regressions', () => {
     h.setAnnounced([hash]);
     for (let n = 0; n < 50; n++) h.t.onWant(wantOf(hash, []));
     expect(h.reads.still).toBe(1);
+  });
+});
+
+describe('EmoteTransfer: shared sounds', () => {
+  /** Every chunk of `bytes`, as its announcer would send them. */
+  const deliver = (h: ReturnType<typeof harness>, bytes: Uint8Array, peer = ANNOUNCER): void => {
+    const n = Math.ceil(bytes.length / EMOTE_CHUNK_BYTES);
+    for (let i = 0; i < n; i++) h.t.onChunk(chunkOf(hashOf(bytes), i, n, bytes.subarray(i * EMOTE_CHUNK_BYTES, (i + 1) * EMOTE_CHUNK_BYTES), peer));
+  };
+
+  it('prefetches an announced emote’s sound after its still, and stores each as what it is', () => {
+    const h = harness();
+    const image = still();
+    const sound = opusSound(1);
+    h.routes.set(ANNOUNCER, 'lan');
+    h.t.announced(ANNOUNCER, [hashOf(image)], [hashOf(sound)]);
+    expect(h.out.map((o) => o.body.h)).toEqual([hashOf(image), hashOf(sound)]);
+    deliver(h, image);
+    deliver(h, sound);
+    expect(h.cache.get(hashOf(sound))).toEqual(sound);
+    expect([h.kinds.get(hashOf(image)), h.kinds.get(hashOf(sound))]).toEqual(['still', 'sound']);
+    expect(h.t.stats.assembling).toBe(0);
+  });
+
+  it('says which sound a member announced for an emote, until their presence or their leaving says otherwise', () => {
+    const h = harness();
+    const [a, b, sound] = [hashOf(still(600, 1)), hashOf(still(600, 2)), hashOf(opusSound(1))];
+    h.t.announced(ANNOUNCER, [a, b], ['', sound]);
+    expect(h.t.soundFor(ANNOUNCER, a)).toBeNull();
+    expect(h.t.soundFor(ANNOUNCER, b)).toBe(sound);
+    expect(h.t.soundFor(REQUESTER, b)).toBeNull(); // the same image on another member's wheel has that member's sound, or none
+    h.t.announced(ANNOUNCER, [a, b]);
+    expect(h.t.soundFor(ANNOUNCER, b)).toBeNull();
+    h.t.announced(ANNOUNCER, [a, b], ['', sound]);
+    h.t.memberGone(ANNOUNCER);
+    expect(h.t.soundFor(ANNOUNCER, b)).toBeNull();
+  });
+
+  it('keeps a finished sound only when it is Ogg Opus of a sound’s length', () => {
+    const h = harness();
+    h.routes.set(ANNOUNCER, 'lan');
+    const image = still(600, 3);
+    const long = opusSound(60, 1, 2); // small on the wire, a minute once decoded
+    const notOpus = still(700, 4); // announced as a sound, but an image
+    h.t.announced(ANNOUNCER, [hashOf(image), hashOf(still(600, 5))], [hashOf(long), hashOf(notOpus)]);
+    deliver(h, long);
+    deliver(h, notOpus);
+    expect(h.cache.size).toBe(0);
+    expect(h.t.stats.assembling).toBe(2); // the two stills are still wanted; both sounds were dropped
+  });
+
+  it('takes a sound of up to SOUND_CHUNKS_MAX chunks, and no still that claims more than a still can have', () => {
+    const h = harness();
+    h.routes.set(ANNOUNCER, 'lan');
+    const sound = opusSound(5, 2, 60); // a full-size shared sound
+    expect(Math.ceil(sound.length / EMOTE_CHUNK_BYTES)).toBeGreaterThan(EMOTE_CHUNKS_MAX);
+    expect(Math.ceil(sound.length / EMOTE_CHUNK_BYTES)).toBeLessThanOrEqual(SOUND_CHUNKS_MAX);
+    const image = still(600, 6);
+    h.t.announced(ANNOUNCER, [hashOf(image)], [hashOf(sound)]);
+    deliver(h, sound);
+    expect(h.cache.get(hashOf(sound))).toEqual(sound);
+    h.t.onChunk(chunkOf(hashOf(image), 0, EMOTE_CHUNKS_MAX + 1, image));
+    expect(h.cache.has(hashOf(image))).toBe(false);
+    h.t.onChunk(chunkOf(hashOf(image), 0, 1, image)); // the oversized claim opened nothing that contradicts this one
+    expect(h.cache.get(hashOf(image))).toEqual(image);
+  });
+
+  it('lets the first announcement decide what a hash is when two members disagree', () => {
+    const h = harness();
+    const OTHER = 'cccccccccccccccc';
+    h.routes.set(ANNOUNCER, 'lan');
+    h.routes.set(OTHER, 'lan');
+    const sound = opusSound(1, 7);
+    h.t.announced(ANNOUNCER, [hashOf(still(600, 8))], [hashOf(sound)]);
+    h.t.announced(OTHER, [hashOf(sound)]); // the same bytes, called a still
+    deliver(h, sound, OTHER);
+    expect(h.cache.size).toBe(0);
+    deliver(h, sound);
+    expect(h.kinds.get(hashOf(sound))).toBe('sound');
+  });
+
+  it('serves our own shared sound to a want, and stops once the hash leaves our announcement', async () => {
+    const h = harness();
+    const sound = opusSound(2, 9);
+    const hash = hashOf(sound);
+    h.files.set(hash, sound);
+    h.routes.set(REQUESTER, 'lan');
+    h.t.onWant(wantOf(hash, []));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.out).toHaveLength(0); // not announced: not served
+
+    h.setSounds([hash]);
+    h.t.onWant(wantOf(hash, []));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.out.filter((o) => o.body.t === 'chunk')).toHaveLength(2);
+    h.setSounds([]); // the sound was replaced or removed while its chunks were queued
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(h.out.filter((o) => o.body.t === 'chunk')).toHaveLength(2);
+    expect(h.t.stats.sending).toBe(0);
+
+    h.setSounds([hash]);
+    h.t.onWant(wantOf(hash, []));
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(sentFile(h.out.slice(2), hash)).toEqual(sound);
   });
 });

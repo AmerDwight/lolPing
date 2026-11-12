@@ -469,6 +469,23 @@ describe('OverlayManager remote and preview emotes', () => {
     expect(sent(0)[1][1]).toMatchObject({ art: { kind: 'custom', fx: 0 } }); // no fx on the message: the sender's plain pop, whatever we stored
   });
 
+  it('plays the sender’s shared sound with their custom emote, over ours for the same image, and none with a placeholder', () => {
+    const url = `lolping://emotes/${'a'.repeat(32)}.webp`;
+    const theirs = `lolping://emotes/${'b'.repeat(32)}.ogg`;
+    const ref = `c:${'a'.repeat(32)}`;
+    const tag = { name: 'Bob', color: 2 };
+    resolveArt
+      .mockReturnValueOnce({ kind: 'custom', url, animated: false, fx: 0 })
+      .mockReturnValueOnce({ kind: 'custom', url, animated: false, fx: 0 })
+      .mockReturnValueOnce({ kind: 'placeholder' });
+    mgr.spawnRemoteEmote({ displayId: 1, x: 1, y: 1, ref, sound: theirs, peer: 'peer-1', tag });
+    mgr.spawnRemoteEmote({ displayId: 1, x: 1, y: 1, ref, peer: 'peer-1', tag });
+    mgr.spawnRemoteEmote({ displayId: 1, x: 1, y: 1, ref, sound: theirs, peer: 'peer-1', tag });
+    expect(sent(0)[0][1]).toMatchObject({ art: { kind: 'custom', sound: theirs } });
+    expect((sent(0)[1][1] as { art: EmoteArt }).art).not.toHaveProperty('sound'); // their sound hasn't arrived: silent
+    expect((sent(0)[2][1] as { art: EmoteArt }).art).toEqual({ kind: 'placeholder' }); // an image we can't show makes no sound
+  });
+
   it('previews in the middle of the main display without sharing', () => {
     const shared = vi.fn();
     mgr.on('sharedEmote', shared);

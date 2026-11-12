@@ -10,7 +10,7 @@ import {
 } from '../../src/shared/roomProtocol';
 
 const base = { peer: '0123456789abcdef', seq: 4, ts: 1_780_000_000_000 };
-const presence: PresenceMsg = { ...base, t: 'presence', proto: 1, app: '0.3.0', name: 'Alex', color: 3, status: 'on', em: [], nf: [] };
+const presence: PresenceMsg = { ...base, t: 'presence', proto: 1, app: '0.3.0', name: 'Alex', color: 3, status: 'on', em: [], sn: [], nf: [] };
 const ping: PingMsg = { ...base, t: 'ping', ping: 'danger', d: 2, x: 0.25, y: 1 };
 const emote: EmoteMsg = { ...base, t: 'emote', e: 'gg', d: 2, x: 0.25, y: 1 };
 const text: TextMsg = { ...base, t: 'text', text: 'Group mid', d: 2, x: 0.25, y: 1 };
@@ -233,8 +233,33 @@ describe('presence announcements (em)', () => {
   const hash2 = 'fedcba9876543210fedcba9876543210';
 
   it('round-trips the announced hashes', () => {
-    const m: PresenceMsg = { ...presence, em: [hash, hash2] };
+    const m: PresenceMsg = { ...presence, em: [hash, hash2], sn: ['', ''] };
     expect(decodeMessage(encodeMessage(m))).toEqual(m);
+  });
+
+  it('round-trips each announced hash’s shared sound, with an empty string for an emote without one', () => {
+    const m: PresenceMsg = { ...presence, em: [hash, hash2], sn: ['', hash] };
+    expect(decodeMessage(encodeMessage(m))).toEqual(m);
+  });
+
+  it('reads a presence without sn as sharing no sounds (an app before sounds travelled)', () => {
+    expect(validateMessage({ ...presence, em: [hash, hash2], sn: undefined })).toMatchObject({ em: [hash, hash2], sn: ['', ''] });
+  });
+
+  it('drops a malformed sound entry, not the others', () => {
+    expect(validateMessage({ ...presence, em: [hash, hash2], sn: [hash2.toUpperCase(), hash] })).toMatchObject({ sn: ['', hash] });
+    expect(validateMessage({ ...presence, em: [hash, hash2], sn: [7, hash] })).toMatchObject({ sn: ['', hash] });
+  });
+
+  it.each([
+    ['sn not an array', { ...presence, em: [hash, hash2], sn: hash }],
+    ['sn shorter than em', { ...presence, em: [hash, hash2], sn: [hash] }],
+    ['sn longer than em', { ...presence, em: [hash], sn: [hash, hash2] }],
+    ['an em entry that was dropped, so positions no longer line up', { ...presence, em: ['XYZ', hash], sn: [hash2, hash2] }],
+    ['a duplicate em entry, dropped the same way', { ...presence, em: [hash, hash], sn: [hash2, hash2] }],
+  ])('reads %s as sharing no sounds', (_label, raw) => {
+    const m = validateMessage(raw) as PresenceMsg;
+    expect(m.sn).toEqual(m.em.map(() => ''));
   });
 
   it('reads a presence without em as announcing nothing (an app before 0.5.2)', () => {
@@ -263,7 +288,7 @@ describe('presence announcements (em)', () => {
 describe('want and chunk messages', () => {
   const hash = '0123456789abcdef0123456789abcdef';
   const want: WantMsg = { ...base, t: 'want', to: 'fedcba9876543210', h: hash, need: [0, 2] };
-  const chunk: ChunkMsg = { ...base, t: 'chunk', h: hash, i: 0, n: 17, b: Buffer.from('x'.repeat(750)).toString('base64') };
+  const chunk: ChunkMsg = { ...base, t: 'chunk', h: hash, i: 0, n: 22, b: Buffer.from('x'.repeat(750)).toString('base64') };
 
   it('round-trips a want and a chunk', () => {
     expect(decodeMessage(encodeMessage(want))).toEqual(want);
@@ -280,11 +305,11 @@ describe('want and chunk messages', () => {
     ['hash upper-case', { ...want, h: hash.toUpperCase() }],
     ['need not an array', { ...want, need: 0 }],
     ['need over 64 entries', { ...want, need: Array(65).fill(0) }],
-    ['need index at the chunk max', { ...want, need: [17] }],
+    ['need index at the chunk max', { ...want, need: [22] }],
     ['need index negative', { ...want, need: [-1] }],
     ['chunk count 0', { ...chunk, n: 0 }],
-    ['chunk count 18', { ...chunk, n: 18 }],
-    ['index at the count', { ...chunk, i: 17 }],
+    ['chunk count 23', { ...chunk, n: 23 }],
+    ['index at the count', { ...chunk, i: 22 }],
     ['index above the count', { ...chunk, n: 3, i: 3 }],
     ['base64 over 1000 characters', { ...chunk, b: 'QQ'.repeat(501) }],
     ['base64 of a ragged length', { ...chunk, b: 'QQQ' }],
@@ -297,6 +322,7 @@ describe('want and chunk messages', () => {
   it('accepts an empty need (all of it) and a full-size chunk', () => {
     expect(validateMessage({ ...want, need: [] })).toMatchObject({ need: [] });
     expect(validateMessage(chunk)).toEqual(chunk);
+    expect(validateMessage({ ...want, need: [21] })).toMatchObject({ need: [21] }); // a shared sound's last chunk
   });
 });
 
@@ -468,7 +494,7 @@ describe('message signatures', () => {
     const worst: PresenceMsg = {
       ...base, seq: Number.MAX_SAFE_INTEGER, t: 'presence', proto: 1, app: '9'.repeat(64), name: '😀'.repeat(16), color: 7,
       rgb: [255, 255, 255], status: 'paused', em: Array.from({ length: 9 }, (_, i) => String(i).repeat(32)),
-      nf: ['text', 'votes'], pk: `${'B'.repeat(43)}=`,
+      sn: Array.from({ length: 9 }, (_, i) => String(i).repeat(32)), nf: ['text', 'votes'], pk: `${'B'.repeat(43)}=`,
     };
     const sealed = seal(Buffer.alloc(32), bytes(joinSigned(enc(worst), SIG)));
     expect(sealed.length).toBeLessThanOrEqual(MAX_PACKET);

@@ -9,8 +9,10 @@ export interface CustomEmote {
   name: string;
   /** Has a `.anim` file besides the still. */
   animated: boolean;
-  /** Has a `.sound` file: it plays when we place the emote, on this computer only (rooms never get it). */
+  /** Has a `.sound` file: it plays when we place the emote. Room members hear the shared copy instead, when there is one. */
   sound?: boolean;
+  /** The hash of its `.share.ogg`: a small Opus copy of the sound, which room members fetch and play. Only with `sound`. */
+  share?: string;
   /** Which signature effect it plays when it lands: 0–5. Nothing stored (an entry from an older version) plays the plain pop. */
   fx?: number;
 }
@@ -50,6 +52,10 @@ export const ANIM_MAX_SIDE = 1024;
 /** An imported emote's sound: OGG, MP3 or WAV, at most this many bytes and seconds. */
 export const SOUND_MAX_BYTES = 1_048_576;
 export const SOUND_MAX_S = 5;
+/** The copy of a sound that travels through a room: mono Ogg Opus, at most this many bytes (22 chunks). */
+export const SHARED_SOUND_MAX_BYTES = 16_384;
+/** A shared sound's packets may decode to this much: SOUND_MAX_S, the picker's slack, and the encoder's delay and padding. */
+export const SHARED_SOUND_MAX_S = SOUND_MAX_S + 0.2;
 /**
  * The signature effects a custom emote can play when it lands: 0 is the plain pop, then spin-in, bounce drop, flash
  * focus, pendulum swing and heartbeat. Which one an image plays is stored on its entry (`CustomEmote.fx`, picked by
@@ -83,6 +89,8 @@ export const CUSTOM_EMOTE_URL = 'lolping://emotes/';
 export const customStillUrl = (hash: string): string => `${CUSTOM_EMOTE_URL}${hash}.webp`;
 export const customAnimUrl = (hash: string): string => `${CUSTOM_EMOTE_URL}${hash}.anim`;
 export const customSoundUrl = (hash: string): string => `${CUSTOM_EMOTE_URL}${hash}.sound`;
+/** A room member's shared sound, by its own hash, from the cache. */
+export const sharedSoundUrl = (hash: string): string => `${CUSTOM_EMOTE_URL}${hash}.ogg`;
 
 /** Every bundled file that has to ship, relative to assets/. */
 export function allEmoteAssetFiles(): string[] {
@@ -105,6 +113,11 @@ export function announcedEmoteHashes(wheel: readonly EmoteRef[], centre: EmoteRe
     if (out.length >= ANNOUNCED_MAX) break;
   }
   return out;
+}
+
+/** For each announced hash, in the same order, the hash of that emote's shared sound, or '' when it has none. */
+export function announcedEmoteSounds(hashes: readonly string[], custom: readonly CustomEmote[]): string[] {
+  return hashes.map((hash) => custom.find((c) => c.id === `c:${hash}`)?.share ?? '');
 }
 
 const isKnown = (ref: EmoteRef, custom: readonly CustomEmote[]): boolean =>

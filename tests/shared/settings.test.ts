@@ -312,6 +312,17 @@ describe('emote settings', () => {
     expect(normalizeSettings({ customEmotes: 'nope' }).customEmotes).toEqual([]);
   });
 
+  it('custom emotes keep the hash of a shared sound only when it is well-formed and the emote has a sound', () => {
+    const share = 'ab'.repeat(16);
+    const list = normalizeSettings({
+      customEmotes: [
+        { ...entry('a'), sound: true, share }, { ...entry('b'), share }, { ...entry('c'), sound: true, share: 'ABC' },
+        { ...entry('d'), sound: true, share: 7 },
+      ],
+    }).customEmotes;
+    expect(list).toEqual([{ ...entry('a'), sound: true, share }, entry('b'), { ...entry('c'), sound: true }, { ...entry('d'), sound: true }]);
+  });
+
   it('custom emotes keep a sound flag only when it is true', () => {
     const list = normalizeSettings({ customEmotes: [{ ...entry('a'), sound: true }, { ...entry('b'), sound: 'yes' }] }).customEmotes;
     expect(list).toEqual([{ ...entry('a'), sound: true }, entry('b')]);
