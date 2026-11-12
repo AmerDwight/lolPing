@@ -1,6 +1,6 @@
 name: Build Windows
 
-# Builds the installer and the portable .exe on demand and keeps them as a workflow artifact, without publishing a release.
+# Builds the portable .exe on demand and keeps it as a workflow artifact, without publishing a release.
 on:
   workflow_dispatch:
 
@@ -20,14 +20,12 @@ jobs:
       # Reported, but a slow runner timing out a PDF or zip parsing test must not stop the build; CI on main still gates them.
       - run: npm test
         continue-on-error: true
-      - run: npm run dist
+      # `npm run dist` with only the portable target: the installer is the release workflow's job.
+      - run: npm run build:helper
+      - run: npx electron-vite build
+      - run: npx electron-builder --win portable --publish never
       - uses: actions/upload-artifact@v4
         with:
           name: lolPing-portable
           path: release/lolPing-*-portable.exe
-          if-no-files-found: error
-      - uses: actions/upload-artifact@v4
-        with:
-          name: lolPing-setup
-          path: release/lolPing-Setup-*.exe
           if-no-files-found: error
