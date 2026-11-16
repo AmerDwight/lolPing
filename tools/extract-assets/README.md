@@ -54,11 +54,11 @@ The crop boxes were measured from the decoded atlases. After a patch that moves 
 
 ## Emotes
 
-`assets/emotes/` and `src/shared/emoteCatalog.ts` are generated from League's summoner-emote effect files by `emote_bake.py`. Each emote is baked into a 320×320 animated WebP (3 s, 30 fps, played once) that matches the in-game animation.
+`assets/emotes/` and `src/shared/emoteCatalog.ts` are generated from League's summoner-emote effect files by `emote_bake.py`. Each emote is baked into a 320×320 animated AVIF (3 s, 30 fps, played once) that matches the in-game animation. The galleries below use animated WebP.
 
 ### Setup
 
-The emote modes need Pillow and NumPy for Python 3.14, plus ffmpeg on PATH and vgmstream-cli:
+The emote modes need Pillow (11.3 or later, whose wheels can write AVIF) and NumPy for Python 3.14, plus ffmpeg on PATH and vgmstream-cli:
 
 ```bash
 py -3.14 -m pip install pillow numpy
@@ -100,7 +100,7 @@ py -3.14 tools/extract-assets/extract_assets.py --league "C:/Riot Games/League o
 
 For every entry, `--emotes` writes:
 
-- **`assets/emotes/<slug>.webp`:** the bake, with lossy alpha at `WEBP_ALPHA_QUALITY` (90, in `emote_bake.py`; it also sets the galleries' alpha).
+- **`assets/emotes/<slug>.avif`:** the bake, at `AVIF_QUALITY` (80, in `emote_bake.py`) for colour and alpha. Pillow can't set an AVIF's loop count, so `write_avif` clears the repeat flag in the file's edit lists itself, and zeroes the encode times libavif stamps in. The galleries' WebPs take their alpha quality from `WEBP_ALPHA_QUALITY` (90).
 - **Edge feather:** every frame's alpha fades to 0 over the outer `EDGE_FEATHER_PX` (40) px of the canvas, so glows and light rays fade out instead of being cut off.
 - **`assets/emotes/<slug>.png`:** the emote's `_selector` icon.
 - **`assets/emotes/<slug>.ogg`:** the emote's sound, mixed like the ping sounds and encoded with `ffmpeg -c:a libopus -b:a 96k`. The sound is chosen in this order:
@@ -112,7 +112,7 @@ For every entry, `--emotes` writes:
 
 `--glow-opacity <n>` draws the halos behind the emotes at that opacity instead of `GLOW_OPACITY`.
 
-It then deletes every other file in `assets/emotes/` and generates `src/shared/emoteCatalog.ts`. `NAME_OVERRIDES` in `extract_assets.py` (slug → name, nameZh) replaces a catalog name where the client's is not enough; the two Unworthy emotes need it, and the run refuses two emotes with the same name. The output is deterministic: running it again on the same League version writes byte-identical files.
+It then deletes every other file in `assets/emotes/` and generates `src/shared/emoteCatalog.ts`. `NAME_OVERRIDES` in `extract_assets.py` (slug → name, nameZh) replaces a catalog name where the client's is not enough; the two Unworthy emotes need it, and the run refuses two emotes with the same name. The output is deterministic: running it again on the same League version, with the same Pillow, writes byte-identical files.
 
 ### Adding an emote later
 
@@ -122,7 +122,7 @@ It then deletes every other file in `assets/emotes/` and generates `src/shared/e
 
 ### Developer commands
 
-`emote_bake.py` also has these commands (`--league` is required for all of them):
+`emote_bake.py` also has these commands (`--league` is required for all of them but `avif`):
 
 | Command | What it does |
 |---|---|
@@ -130,5 +130,6 @@ It then deletes every other file in `assets/emotes/` and generates `src/shared/e
 | `specials` | Lists effects outside the three template families |
 | `sounds` | Scans the banks for emote events |
 | `bake --emote <id> ...` | Bakes just those emotes into a gallery |
+| `avif --dir <folder>` | Encodes every animated WebP in the folder again as AVIF (`write_avif`) and removes the WebP. This is how the set baked as WebP up to v0.6.0 became AVIF without a League install. |
 
 The renderer's assumptions and constants are listed at the top of `emote_bake.py`. One example is `GLOW_OPACITY`, which draws the halo behind an emote at a tenth of its data opacity.

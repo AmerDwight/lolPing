@@ -81,7 +81,7 @@ export const isBundledEmote = (v: unknown): v is EmoteRef => typeof v === 'strin
 export const customHash = (ref: EmoteRef): string => ref.slice(2);
 
 /** Relative to a renderer page at <root>/<page>/index.html; assets/ is served at <root>/. */
-export const emoteAnimUrl = (slug: string): string => `../emotes/${slug}.webp`;
+export const emoteAnimUrl = (slug: string): string => `../emotes/${slug}.avif`;
 export const emoteIconUrl = (slug: string): string => `../emotes/${slug}.png`;
 export const emoteSoundUrl = (slug: string): string => `../emotes/${slug}.ogg`;
 /** Imported emotes live in the user's data folder; the lolping:// protocol serves them under this. */
@@ -94,7 +94,7 @@ export const sharedSoundUrl = (hash: string): string => `${CUSTOM_EMOTE_URL}${ha
 
 /** Every bundled file that has to ship, relative to assets/. */
 export function allEmoteAssetFiles(): string[] {
-  return EMOTE_CATALOG.flatMap((e) => [`emotes/${e.slug}.webp`, `emotes/${e.slug}.png`, ...(e.hasSound ? [`emotes/${e.slug}.ogg`] : [])]);
+  return EMOTE_CATALOG.flatMap((e) => [`emotes/${e.slug}.avif`, `emotes/${e.slug}.png`, ...(e.hasSound ? [`emotes/${e.slug}.ogg`] : [])]);
 }
 
 export function emoteName(ref: EmoteRef, lang: Lang, custom: readonly CustomEmote[]): string {

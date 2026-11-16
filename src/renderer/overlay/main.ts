@@ -222,7 +222,7 @@ const probe = (url: string, label: string): Promise<string | null> =>
     img.src = url;
   });
 
-/** Like probe for a file that is too big to load just to check it: the emote animations come to about 50 MB. */
+/** Like probe for a file that is too big to load just to check it: the emote animations come to about 20 MB. */
 async function probeHead(url: string, label: string): Promise<string | null> {
   try {
     const res = await fetch(url);

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Reads League of Legends summoner-emote effect files and bakes emotes into animated WebP (+ sound).
+"""Reads League of Legends summoner-emote effect files and bakes emotes into animations (+ sound): animated AVIF for the
+bundled set, animated WebP for the galleries.
 
 Requirements: Python 3.14+, Pillow, NumPy; for sounds also ffmpeg on PATH and vgmstream-cli.
 
@@ -11,6 +12,8 @@ Commands (the candidate gallery itself is extract_assets.py --emote-gallery):
       --out %TEMP%/lolping-emote-bake --vgmstream tools/extract-assets/.cache/vgmstream/vgmstream-cli.exe
   (bake writes a gallery.html of just those emotes; serve the folder over HTTP to view it; --glow-opacity 0.3 draws
   the halos at that opacity instead of GLOW_OPACITY)
+  py -3.14 tools/extract-assets/emote_bake.py avif --dir assets/emotes
+  (encodes every animated WebP in the folder again as AVIF and removes the WebP; needs no League install)
 
 Effect file format (PROP v3 bin, see read_bin): one VfxSystemDefinitionData per emote with ~6 emitters
 (VfxEmitterDefinitionData in complexEmitterDefinitionData). The standard layout is IntroAdd (additive flash), IntroAlpha
@@ -53,6 +56,7 @@ listed above or in NO_VISIBLE_EFFECT. unfaithful() keeps the skips that may chan
 import argparse
 import hashlib
 import html
+import io
 import json
 import math
 import os
@@ -121,6 +125,11 @@ WEBP_QUALITY = 80
 # Lossy-alpha quality (100 is lossless) of every WebP written: the bundled emotes (--emotes), the galleries and their posters.
 # Lower is smaller but bands the soft haze (50 did, clearest on a light tile); 90 was chosen in a side-by-side review.
 WEBP_ALPHA_QUALITY = 90
+# The bundled emotes are AVIF: AV1 predicts a frame from the one before, which a WebP animation can't, so the 44 emotes
+# come to about 20 MB where their WebPs came to 48 MB. Quality 80 was chosen by measuring against the quality 80 WebPs
+# (colour within 46 dB, alpha within 52 dB and without the banding lossy WebP alpha gives) and by eye on light and dark tiles.
+AVIF_QUALITY = 80
+AVIF_SPEED = 6                     # libaom effort, 0 (slowest) to 10: 4 is 10% smaller and takes three times as long
 EDGE_FEATHER_PX = 40               # alpha fades (smoothstep) from 0 at the canvas edge to 1 this many px in, so glows aren't cut off
 POSTER_TIME = 1.2                  # the still for galleries: the standard layout holds Mid from ~0.6 s to ~2 s
 
@@ -1099,6 +1108,76 @@ def write_webp(frames: list, out: Path, alpha_quality: int = WEBP_ALPHA_QUALITY)
                    quality=WEBP_QUALITY, alpha_quality=alpha_quality, lossless=False, method=4)
 
 
+def _avif_finish(data: bytearray) -> None:
+    """Two fixes to the AVIF libavif wrote, in place. Pillow has no loop setting for AVIF, and libavif then marks every
+    track's edit list (moov/trak/edts/elst) as repeating for ever: clearing that flag is what libavif writes for "play
+    once", and what Chromium reads the loop count from. And libavif stamps the movie, its tracks and their media with the
+    time of encoding: those become 0, so encoding the same frames again writes the same bytes."""
+    def boxes(start: int, end: int):
+        p = start
+        while p + 8 <= end:
+            size, kind = struct.unpack_from('>I4s', data, p)
+            header = 8
+            if size == 1:
+                size, header = struct.unpack_from('>Q', data, p + 8)[0], 16
+            elif size == 0:
+                size = end - p
+            if size < header or p + size > end:
+                raise SystemExit('malformed AVIF box')
+            yield kind, p + header, p + size
+            p += size
+
+    def children(parents: list[tuple[int, int]], kind: bytes) -> list[tuple[int, int]]:
+        return [(s, e) for start, end in parents for k, s, e in boxes(start, end) if k == kind]
+
+    moov = children([(0, len(data))], b'moov')
+    traks = children(moov, b'trak')
+    edits = children(children(traks, b'edts'), b'elst')
+    if not edits:
+        raise SystemExit('the AVIF has no edit list to make it play once')
+    for start, _end in edits:
+        data[start + 1:start + 4] = b'\x00\x00\x00'  # FullBox flags after the version byte; bit 0 is "repeat"
+    # mvhd, tkhd and mdhd all start with version, flags, creation time, modification time (64-bit in version 1).
+    for start, _end in [*children(moov, b'mvhd'), *children(traks, b'tkhd'), *children(children(traks, b'mdia'), b'mdhd')]:
+        width = 8 if data[start] == 1 else 4
+        data[start + 4:start + 4 + 2 * width] = bytes(2 * width)
+
+
+def write_avif(frames: list, out: Path, durations: list[int] | None = None) -> None:
+    """The frames as an animated AVIF that plays once (quality AVIF_QUALITY for colour and alpha), each shown for its
+    entry in durations (ms; FPS by default)."""
+    if durations is None:
+        durations = [round((i + 1) * 1000 / FPS) - round(i * 1000 / FPS) for i in range(len(frames))]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    buf = io.BytesIO()
+    frames[0].save(buf, format='AVIF', save_all=True, append_images=frames[1:], duration=durations,
+                   quality=AVIF_QUALITY, speed=AVIF_SPEED)
+    data = bytearray(buf.getvalue())
+    _avif_finish(data)
+    out.write_bytes(data)
+
+
+def reencode_avif(folder: Path) -> None:
+    """The avif command: every animated WebP in folder becomes an AVIF (write_avif) with the same frames and frame
+    times, and the WebP is removed. The times matter: the WebP encoder merged each emote's empty tail into one long last
+    frame. For a set that was baked as WebP; a new --emotes run encodes the rendered frames directly."""
+    from PIL import Image
+
+    for webp in sorted(folder.glob('*.webp')):
+        with Image.open(webp) as im:
+            if not getattr(im, 'is_animated', False):
+                continue
+            frames, durations = [], []
+            for i in range(im.n_frames):
+                im.seek(i)
+                frames.append(im.convert('RGBA'))
+                durations.append(im.info['duration'])
+        out = webp.with_suffix('.avif')
+        write_avif(frames, out, durations)
+        print(f'{webp.name}: {webp.stat().st_size // 1024} KB -> {out.stat().st_size // 1024} KB')
+        webp.unlink()
+
+
 def write_poster(frames: list, out: Path) -> None:
     """The frame at POSTER_TIME as a still WebP, for galleries."""
     frames[min(len(frames) - 1, round(POSTER_TIME * FPS))].save(out, format='WEBP', quality=WEBP_QUALITY,
@@ -1344,14 +1423,18 @@ def keyword_candidates(emotes: list[dict], zh: dict[int, str], has_effect) -> li
 def _bake_job(gw: Path, effect: BinFile, outs: list[tuple[Path, int]], poster: Path | None = None,
               glow_opacity: float | None = None) -> tuple[list[str], list[str]]:
     """Process-pool worker: renders the effect once (halo at glow_opacity) and writes it to each (path, alpha quality)
-    in outs, plus a still at poster; with no outs it only audits. Returns (skipped properties, family_sounds)."""
+    in outs (an .avif path as AVIF, where the alpha quality is unused), plus a still at poster; with no outs it only
+    audits. Returns (skipped properties, family_sounds)."""
     linked = linked_bins(gw, effect)
     textures = effect_textures(gw, [effect, *linked])
     if not outs:
         return audit(effect, linked, textures), family_sounds(effect, linked)
     frames, skipped = render(effect, linked, textures, glow_opacity=glow_opacity)
     for out, alpha_quality in outs:
-        write_webp(frames, out, alpha_quality)
+        if out.suffix == '.avif':
+            write_avif(frames, out)
+        else:
+            write_webp(frames, out, alpha_quality)
     if poster is not None:
         write_poster(frames, poster)
     return skipped, family_sounds(effect, linked)
@@ -1830,7 +1913,7 @@ def write_catalog(path: Path, entries: list[dict], wheel: list[str], click: str,
 
 def bake_set(league: Path, vgmstream: str, emote_set: dict[str, int], out_dir: Path, zh: dict[int, str],
              glow_opacity: float | None = None) -> list[dict]:
-    """Bakes every entry of emote_set (in order) into out_dir: <slug>.webp (alpha quality WEBP_ALPHA_QUALITY), <slug>.png
+    """Bakes every entry of emote_set (in order) into out_dir: <slug>.avif (quality AVIF_QUALITY), <slug>.png
     (the _selector icon) and <slug>.ogg (render_sound; removed when there is none). zh maps League ids to Chinese names.
     Returns one dict per entry. The halos are drawn at glow_opacity (default GLOW_OPACITY)."""
     gw = league / GLOBAL_WAD_REL
@@ -1843,7 +1926,7 @@ def bake_set(league: Path, vgmstream: str, emote_set: dict[str, int], out_dir: P
     out_dir.mkdir(parents=True, exist_ok=True)
     sounds = EmoteSounds(league)
     with _pool() as pool:
-        jobs = {slug: pool.submit(_bake_job, gw, effects[eid], [(out_dir / f'{slug}.webp', WEBP_ALPHA_QUALITY)], None,
+        jobs = {slug: pool.submit(_bake_job, gw, effects[eid], [(out_dir / f'{slug}.avif', WEBP_ALPHA_QUALITY)], None,
                                   glow_opacity)
                 for slug, eid in emote_set.items()}
         stills = pool.submit(_stills_job, gw, [(f'{slug}.png', still_paths(by_id[eid], effects[eid]))
@@ -1859,7 +1942,7 @@ def bake_set(league: Path, vgmstream: str, emote_set: dict[str, int], out_dir: P
         entries.append({'slug': slug, 'leagueId': eid, 'name': by_id[eid]['name'], 'nameZh': zh[eid],
                         'hasSound': has, 'soundEvent': event, 'soundSource': source,
                         'png': f'{slug}.png' if f'{slug}.png' in pngs else None,
-                        'bytes': (out_dir / f'{slug}.webp').stat().st_size,
+                        'bytes': (out_dir / f'{slug}.avif').stat().st_size,
                         'pngBytes': (out_dir / f'{slug}.png').stat().st_size if f'{slug}.png' in pngs else 0,
                         'oggBytes': ogg.stat().st_size if has else 0, 'skipped': skipped, 'unfaithful': unfaithful(skipped)})
     return entries
@@ -1868,10 +1951,10 @@ def bake_set(league: Path, vgmstream: str, emote_set: dict[str, int], out_dir: P
 def write_emotes(league: Path, vgmstream: str, emote_set: dict[str, int], wheel: list[str], click: str,
                  out_dir: Path, catalog: Path, name_overrides: dict[str, tuple[str, str]] | None = None,
                  glow_opacity: float | None = None) -> list[dict]:
-    """--emotes: assets/emotes/<slug>.webp (WEBP_ALPHA_QUALITY), .png and .ogg for every EMOTE_SET entry, any other file
+    """--emotes: assets/emotes/<slug>.avif (AVIF_QUALITY), .png and .ogg for every EMOTE_SET entry, any other file
     in out_dir removed, then src/shared/emoteCatalog.ts (with name_overrides applied: slug -> (name, nameZh)). Stops
     before baking when the Chinese names (load_zh_names) lack an entry or two emotes would share a name, and afterwards
-    when an entry lacks its .webp or .png."""
+    when an entry lacks its .avif or .png."""
     name_overrides = name_overrides or {}
     check_emote_set(emote_set, wheel, click, name_overrides)
     zh = load_zh_names(required=True)
@@ -1890,7 +1973,7 @@ def write_emotes(league: Path, vgmstream: str, emote_set: dict[str, int], wheel:
         if same:
             raise SystemExit(f'emotes share the {field} {same}: give each its own in NAME_OVERRIDES')
     entries = bake_set(league, vgmstream, emote_set, out_dir, zh, glow_opacity)
-    expected = {f'{e["slug"]}.{ext}' for e in entries for ext in ('webp', 'png', *(['ogg'] if e['hasSound'] else []))}
+    expected = {f'{e["slug"]}.{ext}' for e in entries for ext in ('avif', 'png', *(['ogg'] if e['hasSound'] else []))}
     for f in sorted(out_dir.iterdir()):
         if f.name not in expected:
             f.unlink()
@@ -1929,6 +2012,8 @@ def main() -> None:
     b.add_argument('--out', type=Path, default=Path(tempfile.gettempdir()) / 'lolping-emote-bake')
     b.add_argument('--vgmstream', help='path to vgmstream-cli.exe (sounds are skipped without it)')
     b.add_argument('--glow-opacity', type=float, help=f'halo opacity for this run (default {GLOW_OPACITY:g})')
+    a = sub.add_parser('avif', help='encode the animated WebPs in a folder again as AVIF and remove them')
+    a.add_argument('--dir', type=Path, required=True)
     args = ap.parse_args()
     if args.cmd == 'dump':
         gw = args.league / GLOBAL_WAD_REL
@@ -1944,6 +2029,8 @@ def main() -> None:
         cmd_sounds(args.league, args.emote)
     elif args.cmd == 'bake':
         cmd_bake(args.league, args.emote, args.out, args.vgmstream, args.glow_opacity)
+    elif args.cmd == 'avif':
+        reencode_avif(args.dir)
 
 
 if __name__ == '__main__':

@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CLICK_EMOTE, DEFAULT_EMOTE_WHEEL, EMOTE_CATALOG } from '../../src/shared/emoteCatalog';
 import {
@@ -43,7 +45,7 @@ describe('emote refs', () => {
   });
 
   it('builds asset urls', () => {
-    expect(emoteAnimUrl('facepalm')).toBe('../emotes/facepalm.webp');
+    expect(emoteAnimUrl('facepalm')).toBe('../emotes/facepalm.avif');
     expect(emoteIconUrl('facepalm')).toBe('../emotes/facepalm.png');
     expect(emoteSoundUrl('facepalm')).toBe('../emotes/facepalm.ogg');
     expect(customHash(`c:${HASH}`)).toBe(HASH);
@@ -134,7 +136,7 @@ describe('asset files', () => {
     const files = allEmoteAssetFiles();
     const sounds = EMOTE_CATALOG.filter((e) => e.hasSound).length;
     expect(files).toHaveLength(EMOTE_CATALOG.length * 2 + sounds);
-    expect(files).toContain('emotes/facepalm.webp');
+    expect(files).toContain('emotes/facepalm.avif');
     expect(files).toContain('emotes/facepalm.png');
     expect(files).toContain('emotes/facepalm.ogg');
     expect(new Set(files).size).toBe(files.length);
@@ -142,6 +144,39 @@ describe('asset files', () => {
 
   it('skips the sound of an emote without one', () => {
     for (const e of EMOTE_CATALOG.filter((c) => !c.hasSound)) expect(allEmoteAssetFiles()).not.toContain(`emotes/${e.slug}.ogg`);
+  });
+
+  it('finds every listed file in assets/', () => {
+    const assets = resolve(__dirname, '../../assets');
+    for (const file of allEmoteAssetFiles()) expect(existsSync(resolve(assets, file)), file).toBe(true);
+  });
+
+  it('bakes every animation as an AVIF that plays once', () => {
+    // The boxes inside [start, end) of an ISO-BMFF file, as [type, payload start, end].
+    const boxes = (data: Buffer, start: number, end: number): [string, number, number][] => {
+      const out: [string, number, number][] = [];
+      for (let p = start; p + 8 <= end;) {
+        const size = data.readUInt32BE(p);
+        if (size < 8 || p + size > end) throw new Error(`bad box at ${p}`);
+        out.push([data.toString('latin1', p + 4, p + 8), p + 8, p + size]);
+        p += size;
+      }
+      return out;
+    };
+    const inside = (data: Buffer, parents: [string, number, number][], type: string): [string, number, number][] =>
+      parents.flatMap(([, s, e]) => boxes(data, s, e)).filter(([t]) => t === type);
+    const assets = resolve(__dirname, '../../assets');
+    for (const e of EMOTE_CATALOG) {
+      const data = readFileSync(resolve(assets, 'emotes', `${e.slug}.avif`));
+      expect(data.toString('latin1', 8, 12), e.slug).toBe('avis'); // the ftyp brand of an image sequence
+      const moov = boxes(data, 0, data.length).filter(([t]) => t === 'moov');
+      const traks = inside(data, moov, 'trak');
+      const lists = inside(data, inside(data, traks, 'edts'), 'elst');
+      // One edit list per track (colour and alpha). Chromium reads the loop count from it: flag 1 repeats for ever,
+      // libavif's default, and 0 plays once.
+      expect(lists.length, e.slug).toBe(traks.length);
+      for (const [, s] of lists) expect(data.readUInt32BE(s) & 0xffffff, e.slug).toBe(0);
+    }
   });
 });
 
