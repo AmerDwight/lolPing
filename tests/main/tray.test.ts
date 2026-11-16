@@ -300,12 +300,14 @@ describe('the tray’s sync status', () => {
     const lines = syncLines(sync({ members: [alex, old, { name: 'New', path: 'connecting', got: null, sync: { have: 0, total: 0 } }], unshared: 2 }), en);
     expect(lines).toEqual([
       'Sync: 66% (12 of 18)',
-      'Alex (LAN): got 0 of their 5; they have 100% of the room’s',
+      'Alex (LAN): got 0 of their 5; they are fully synced',
       'Old (internet): got 6 of their 6; they don’t report (older version, or sync off)',
-      'New (connecting): shares no files; they have 100% of the room’s',
+      'New (connecting): shares no files; they are fully synced',
       '2 of your sounds have no copy to share yet',
     ]);
     expect(syncLines(sync({ unshared: 1 }), en).at(-1)).toBe('1 of your sounds has no copy to share yet');
+    expect(syncLines(sync({ members: [{ ...alex, sync: { have: 3, total: 6 } }] }), en)[1]).toBe('Alex (LAN): got 0 of their 5; they are 50% synced');
+    expect(syncLines(sync({ members: [{ ...alex, sync: { have: 3, total: 6 } }] }), strings('zh-CN'))[1]).toBe('Alex（局域网）：已收到对方 0/5；对方同步中 50%');
   });
 
   it('doubles an ampersand in a member’s name, which a menu would otherwise read as a shortcut mark', () => {
@@ -315,7 +317,7 @@ describe('the tray’s sync status', () => {
   it('has the same lines in Chinese', () => {
     const zh = strings('zh-CN');
     expect(syncLines(sync({ members: [alex, old], unshared: 1 }), zh)).toEqual([
-      '同步：66%（12/18）', 'Alex（局域网）：已收到对方 0/5；对方已收到房间的 100%',
+      '同步：66%（12/18）', 'Alex（局域网）：已收到对方 0/5；对方已完成同步',
       'Old（互联网）：已收到对方 6/6；对方未回报（旧版本，或已关闭同步）', '你有 1 个声音还没有可分享的副本',
     ]);
   });
@@ -324,7 +326,7 @@ describe('the tray’s sync status', () => {
     const tray = new AppTray('icon.png', handlers);
     tray.setRoom({ code: 'PING-7KQ4M-2HXTR', count: 2, muted: false, sync: sync({ members: [alex] }) });
     expect(labels().slice(0, 4)).toEqual([
-      'PING-7KQ4M-2HXTR · 2 people', 'Sync: 66% (12 of 18)', 'Alex (LAN): got 0 of their 5; they have 100% of the room’s', 'Sync now',
+      'PING-7KQ4M-2HXTR · 2 people', 'Sync: 66% (12 of 18)', 'Alex (LAN): got 0 of their 5; they are fully synced', 'Sync now',
     ]);
     expect(roomMenu().slice(1, 3).every((i) => i.enabled === false)).toBe(true);
     roomMenu().find((i) => i.label === 'Sync now')!.click!({});
@@ -335,7 +337,7 @@ describe('the tray’s sync status', () => {
     expect(created[0].menus.length).toBe(menus); // nothing moved
     tray.setRoom({ code: 'PING-7KQ4M-2HXTR', count: 2, muted: false, sync: sync({ members: [{ ...alex, got: { have: 1, total: 5 } }] }) });
     expect(created[0].menus.length).toBe(menus + 1);
-    expect(labels()[2]).toBe('Alex (LAN): got 1 of their 5; they have 100% of the room’s');
+    expect(labels()[2]).toBe('Alex (LAN): got 1 of their 5; they are fully synced');
   });
 
   it('puts the percentage in the tooltip only while files are still on their way', () => {

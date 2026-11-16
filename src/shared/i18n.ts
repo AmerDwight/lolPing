@@ -763,7 +763,7 @@ const en = {
     `${name} (${path}): ${got ? `got ${got.have} of their ${got.total}` : 'shares no files'}; ${theirs}`,
   traySyncPath: (path: 'lan' | 'internet' | 'connecting' | 'unreachable') =>
     ({ lan: 'LAN', internet: 'internet', connecting: 'connecting', unreachable: 'unreachable' })[path],
-  traySyncTheirs: (percent: number) => `they have ${percent}% of the room’s`,
+  traySyncTheirs: (percent: number) => (percent >= 100 ? 'they are fully synced' : `they are ${percent}% synced`),
   traySyncTheirsUnknown: 'they don’t report (older version, or sync off)',
   traySyncUnshared: (n: number) => `${n} of your sounds ${n === 1 ? 'has' : 'have'} no copy to share yet`,
   traySyncNow: 'Sync now',
@@ -1535,7 +1535,7 @@ const zh: Strings = {
   traySyncOff: '同步：已关闭（未显示好友的自定义表情）',
   traySyncMember: (name, path, got, theirs) => `${name}（${path}）：${got ? `已收到对方 ${got.have}/${got.total}` : '对方没有分享文件'}；${theirs}`,
   traySyncPath: (path) => ({ lan: '局域网', internet: '互联网', connecting: '连接中', unreachable: '无法连接' })[path],
-  traySyncTheirs: (percent) => `对方已收到房间的 ${percent}%`,
+  traySyncTheirs: (percent) => (percent >= 100 ? '对方已完成同步' : `对方同步中 ${percent}%`),
   traySyncTheirsUnknown: '对方未回报（旧版本，或已关闭同步）',
   traySyncUnshared: (n) => `你有 ${n} 个声音还没有可分享的副本`,
   traySyncNow: '立即同步',
