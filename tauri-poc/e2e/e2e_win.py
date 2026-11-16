@@ -464,6 +464,9 @@ if args.portable:
     metrics['portable_startup_s'] = [time_to_overlay(pcmd) for _ in range(3)]
     metrics['portable_mb'] = round(os.path.getsize(args.portable) / 2**20, 1)
 
+if os.path.exists(app_log):
+    print('--- app log ---')
+    print(open(app_log, encoding='utf-8', errors='replace').read()[-4000:])
 report = {'kind': args.kind, 'passed': all(results.values()), 'results': results, 'metrics': metrics}
 with open(os.path.join(args.out, 'report.json'), 'w') as f:
     json.dump(report, f, indent=2)

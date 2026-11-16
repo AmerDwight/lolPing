@@ -61,6 +61,18 @@ describe('BrowserWindow', () => {
     expect(calls.slice(1).map((c) => c.args?.op)).toEqual(['ignoreMouse', 'topmost', 'show']);
   });
 
+  it('sends calls straight out once the window exists, without waiting for the last answer', async () => {
+    const win = new BrowserWindow();
+    void win.loadURL('lolping://app/overlay/index.html');
+    finishCreate();
+    await settle();
+    const stuck = new Promise<never>(() => undefined);
+    vi.stubGlobal('window', { __TAURI_INTERNALS__: { invoke: (cmd: string, args?: Record<string, unknown>) => (calls.push({ cmd, args }), stuck) } });
+    win.showInactive();
+    win.setBounds({ x: 0, y: 0, width: 10, height: 10 });
+    expect(calls.slice(-2).map((c) => c.args?.op)).toEqual(['show', 'bounds']);
+  });
+
   it('drops messages to a page that has not loaded, like Electron', async () => {
     const win = new BrowserWindow();
     void win.loadURL('lolping://app/overlay/index.html');

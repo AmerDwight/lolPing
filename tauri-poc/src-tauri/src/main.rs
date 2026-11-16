@@ -376,6 +376,7 @@ fn main() {
             app_info, win_create, win_op, win_send, ipc_send, core_ready, helper_start, helper_write, set_tray, log, quit
         ])
         .setup(|app| {
+            log_line(app.handle(), "shell started");
             let core = WebviewWindowBuilder::new(app.handle(), CORE, WebviewUrl::App("core/index.html".into()))
                 .title("lolPing")
                 .visible(false)

@@ -77,9 +77,11 @@ export class BrowserWindow extends EventEmitter {
   private destroyed = false;
   private visible = false;
   private bounds: Rect;
-  /** Every Tauri command for this window, in the order the code made the calls, starting once it exists. */
+  /** Tauri commands for this window made before it existed, run in order once it does. */
   private chain: Promise<void>;
   private open: () => void = () => undefined;
+  private created = false;
+  private waiting = 0;
 
   static fromWebContents(wc: WebContents): BrowserWindow | null {
     return windows.has(wc.owner.label) ? wc.owner : null;
@@ -114,17 +116,34 @@ export class BrowserWindow extends EventEmitter {
         overlay: page.startsWith('overlay/'),
       },
     });
-    created.then(() => this.open(), (e: unknown) => {
-      log(`win_create ${this.label}: ${String(e)}`);
+    const opened = (): void => {
+      this.created = true;
       this.open();
+    };
+    created.then(opened, (e: unknown) => {
+      log(`win_create ${this.label}: ${String(e)}`);
+      opened();
     });
     return created;
   }
 
+  /**
+   * Once the window exists and nothing is waiting, a call goes straight out: the shell runs these commands in the order
+   * they arrive, so waiting for each answer would only add a round trip per call (the wheel opened 12 ms later).
+   */
   queue(cmd: string, args: Record<string, unknown>): void {
+    const fail = (e: unknown): void => log(`${cmd} ${this.label}: ${String(e)}`);
+    if (this.created && this.waiting === 0) {
+      invoke(cmd, args).catch(fail);
+      return;
+    }
+    this.waiting++;
     this.chain = this.chain
       .then(() => invoke(cmd, args))
-      .catch((e: unknown) => log(`${cmd} ${this.label}: ${String(e)}`));
+      .catch(fail)
+      .finally(() => {
+        this.waiting--;
+      });
   }
 
   setIgnoreMouseEvents(on: boolean): void {
@@ -197,6 +216,7 @@ export function dispatchIpc(label: string, channel: string, payload: unknown): v
   const win = windows.get(label);
   if (!win) return;
   if (channel === PAGE_READY) {
+    log(`page ready in ${label}`);
     win.webContents.loaded = true;
     win.webContents.emit('did-finish-load');
     win.emit('ready-to-show');
