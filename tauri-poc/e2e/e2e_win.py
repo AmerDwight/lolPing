@@ -3,7 +3,8 @@
 Runs the same checks on the Electron app and on the Tauri proof of concept, so the Electron run shows the test itself
 holds on this machine. It drives the default keys: Alt+drag for the ping wheel, Ctrl+drag for the emote wheel.
 
-usage: python e2e_win.py --kind tauri|electron --app <exe> --assets <repo>/assets --out <dir>
+usage: python e2e_win.py --kind tauri|electron --app <exe> --assets out/renderer --out <dir> [--portable <exe>]
+--assets is the folder the build ships (emotes, sounds, textures), --portable an Electron portable exe to time too.
 needs: pip install websocket-client pillow psutil
 """
 import argparse
@@ -27,6 +28,8 @@ ap.add_argument('--app', required=True)
 ap.add_argument('--assets', required=True)
 ap.add_argument('--out', required=True)
 ap.add_argument('--port', type=int, default=9333)
+ap.add_argument('--portable', help='an Electron portable exe: its start is timed as well')
+ap.add_argument('--reps', type=int, default=5, help='wheels opened from idle for the latency figures')
 args = ap.parse_args()
 os.makedirs(args.out, exist_ok=True)
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -357,6 +360,59 @@ img = page.eval("""(() => { const i = document.querySelector('#emotes img');
 check('emote_animation_loaded', img and img['w'] > 0 and img['done'], json.dumps(img))
 shot('emote_playing')
 
+# --- latency from idle, several times -------------------------------------------------------------------------
+
+
+def parked():
+    ovs = overlay_windows(proc.pid)
+    return ovs and not any(on_display(r) for _, r, _ in ovs)
+
+
+def open_wheel_from_idle():
+    """Alt+drag once the overlay is parked again. Returns (ms to the wheel in the page, ms to the overlay on display)."""
+    if not wait(parked, 15, 0.1):
+        return None, None
+    time.sleep(0.5)
+    before = len(e2e()['events'])
+    placed = {}
+    th = threading.Thread(target=lambda: placed.update(
+        t=wait(lambda: any(on_display(r) for _, r, _ in overlay_windows(proc.pid)) and time.time(), 3, 0.002)))
+    move(700, 500)
+    time.sleep(0.1)
+    key(0xA4, True)
+    time.sleep(0.05)
+    button(True)
+    time.sleep(0.03)
+    th.start()
+    t_drag = None
+    for i in range(1, 11):
+        move(700, 500 - 14 * i)
+        t_drag = t_drag or time.time()
+        time.sleep(0.015)
+    time.sleep(0.2)
+    move(700, 500)  # back to the centre: let go there and no ping is placed, so the overlay idles again soon
+    time.sleep(0.1)
+    button(False)
+    key(0xA4, False)
+    th.join()
+    opened = next((e['t'] for e in e2e()['events'][before:] if e['what'].endswith(':open')), None)
+    return (round(opened - t_drag * 1000) if opened else None,
+            round((placed['t'] - t_drag) * 1000) if placed.get('t') else None)
+
+
+def median(xs):
+    xs = sorted(x for x in xs if x is not None)
+    return xs[len(xs) // 2] if xs else None
+
+
+samples = [open_wheel_from_idle() for _ in range(args.reps)]
+metrics['wheel_from_idle_ms'] = {
+    'samples': samples,
+    'in_page_median': median(s[0] for s in samples), 'in_page_max': max((s[0] for s in samples if s[0] is not None), default=None),
+    'on_display_median': median(s[1] for s in samples), 'on_display_max': max((s[1] for s in samples if s[1] is not None), default=None),
+}
+check('wheel_opens_every_time', all(s[0] is not None and s[1] is not None for s in samples), json.dumps(samples))
+
 # --- cost ---------------------------------------------------------------------------------------------------------
 procs = [proc] + proc.children(recursive=True)
 mem = [p.memory_info() for p in procs if p.is_running()]
@@ -375,6 +431,38 @@ for p in procs:
         pass
 check('hook_helper_exits_with_app', wait(lambda: not helpers(), 10))
 target.kill()
+metrics['startup_first_s'] = metrics.pop('startup_to_overlay_s')
+
+
+def time_to_overlay(command):
+    """Seconds from launch until the overlay page is loaded and wired up, then stops the app and waits for it."""
+    time.sleep(2)
+    t0 = time.time()
+    p = subprocess.Popen(command, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    took = None
+    try:
+        ov = wait(overlay_target, 120, 0.05)
+        if ov:
+            pg = Page(ov['webSocketDebuggerUrl'])
+            if wait(lambda: pg.eval("typeof window.overlay === 'object' && document.readyState === 'complete'"), 30, 0.02):
+                took = round(time.time() - t0, 2)
+    finally:
+        tree = [psutil.Process(p.pid)] + psutil.Process(p.pid).children(recursive=True)
+        for q in tree:
+            try:
+                q.kill()
+            except psutil.Error:
+                pass
+        psutil.wait_procs(tree, timeout=10)
+        wait(lambda: not helpers(), 10)
+    return took
+
+
+metrics['startup_again_s'] = [time_to_overlay(cmd) for _ in range(2)]
+if args.portable:
+    pcmd = [args.portable] + cmd[1:]
+    metrics['portable_startup_s'] = [time_to_overlay(pcmd) for _ in range(3)]
+    metrics['portable_mb'] = round(os.path.getsize(args.portable) / 2**20, 1)
 
 report = {'kind': args.kind, 'passed': all(results.values()), 'results': results, 'metrics': metrics}
 with open(os.path.join(args.out, 'report.json'), 'w') as f:
