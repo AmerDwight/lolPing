@@ -3,3 +3,4 @@ gen/
 src-tauri/target/
 src-tauri/gen/
 e2e/out/
+__pycache__/
