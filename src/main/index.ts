@@ -367,7 +367,7 @@ function start(): void {
     const p = transfer.progress();
     overlays.toast(text().syncToastTitle, p ? text().syncToastBody(p.have, p.total) : text().syncToastOff);
   }
-  room.on('want', (w: Parameters<EmoteTransfer['onWant']>[0]) => transfer.onWant(w));
+  room.on('want', (w: Parameters<EmoteTransfer['onWant']>[0], via: 'lan' | 'shared') => transfer.onWant(w, via));
   room.on('chunk', (c: Parameters<EmoteTransfer['onChunk']>[0]) => transfer.onChunk(c));
   room.on('blob', (c: Parameters<EmoteTransfer['onBlob']>[0]) => transfer.onBlob(c));
   room.on('memberGone', (peer: string) => transfer.memberGone(peer));
@@ -484,7 +484,7 @@ function start(): void {
       code: s.code, count: s.members.length, muted: settings.roomMuted,
       sync: {
         mine: me?.sync ?? null,
-        members: s.members.filter((m) => !m.self).map((m) => ({ name: m.name, sync: m.sync })),
+        members: s.members.filter((m) => !m.self).map((m) => ({ name: m.name, path: m.path, got: transfer.progressOf(m.peer), sync: m.sync })),
         unshared: backfill.missing(),
       },
     });

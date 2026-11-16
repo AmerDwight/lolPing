@@ -678,6 +678,21 @@ describe('internet over a shared transport', () => {
     expect(inet.state().phase).toBe('active');
   }
 
+  it('hands on a want with the path it arrived by', async () => {
+    await joinNow();
+    const far = new Remote('2222222222222222', 'net:b', lan);
+    netPresence(far);
+    const near = new Remote('1111111111111111', 'lan:a', lan);
+    near.presence();
+    const seen: unknown[] = [];
+    inet.on('want', (_w: RoomMessage, via: string) => seen.push(via));
+    const want = (r: Remote): Buffer => r.packet({ t: 'want', to: inet.self, h: '0123456789abcdef0123456789abcdef', need: [] });
+    net.deliver(far.key, want(far));
+    lan.deliver(near.key, want(near));
+    net.deliver('net:x', want(near)); // a LAN member whose LAN packets don't reach us asks through a relay
+    expect(seen).toEqual(['shared', 'lan', 'shared']);
+  });
+
   it('takes a long blob part from a relay only: never from LAN, and never any other message that long', async () => {
     await joinNow();
     const blobs: RoomMessage[] = [];

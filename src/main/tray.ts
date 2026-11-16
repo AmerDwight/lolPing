@@ -1,6 +1,6 @@
 import { Menu, Tray, nativeImage, type MenuItemConstructorOptions, type NativeImage } from 'electron';
 import { strings, type Strings } from '../shared/i18n';
-import { syncPercent } from '../shared/room';
+import { syncPercent, type MemberPath } from '../shared/room';
 import type { UpdateState } from '../shared/update';
 
 export type TrayMode = 'on' | 'off' | 'failed' | 'noAccess';
@@ -47,8 +47,11 @@ type SyncCount = { have: number; total: number };
 export interface TraySync {
   /** Files here out of the files the other members announce; null while friends' custom emotes are switched off. */
   mine: SyncCount | null;
-  /** Each other member's own count, in the room's order; null for one that doesn't report it. */
-  members: { name: string; sync: SyncCount | null }[];
+  /**
+   * Each other member, in the room's order: how they are reached, how many of the files on their wheel are here (null
+   * when they announce none), and their own count of what they have of everyone's (null when they don't report it).
+   */
+  members: { name: string; path: MemberPath; got: SyncCount | null; sync: SyncCount | null }[];
   /** Our sounds that have no copy for rooms yet: nobody can hear those. */
   unshared: number;
 }
@@ -68,7 +71,8 @@ const plain = (label: string): string => label.replace(/&/g, '&&');
 export function syncLines(sync: TraySync, t: Strings): string[] {
   const lines = [sync.mine ? t.traySync(sync.mine.have, sync.mine.total, syncPercent(sync.mine)) : t.traySyncOff];
   for (const m of sync.members) {
-    lines.push(plain(m.sync ? t.traySyncMember(m.name, m.sync.have, m.sync.total, syncPercent(m.sync)) : t.traySyncMemberUnknown(m.name)));
+    const theirs = m.sync ? t.traySyncTheirs(syncPercent(m.sync)) : t.traySyncTheirsUnknown;
+    lines.push(plain(t.traySyncMember(m.name, t.traySyncPath(m.path), m.got, theirs)));
   }
   if (sync.unshared > 0) lines.push(t.traySyncUnshared(sync.unshared));
   return lines;

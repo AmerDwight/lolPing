@@ -51,7 +51,7 @@ function side(name: string, url: string, seed: number, count: number, blobs = tr
     spareSharedToken: (keep) => room.spareSharedToken(keep),
   });
   room.on('emotes', (p: string, h: string[], s: string[]) => transfer.announced(p, h, s));
-  room.on('want', (w: Parameters<EmoteTransfer['onWant']>[0]) => transfer.onWant(w));
+  room.on('want', (w: Parameters<EmoteTransfer['onWant']>[0], via: 'lan' | 'shared') => transfer.onWant(w, via));
   room.on('chunk', (c: Parameters<EmoteTransfer['onChunk']>[0]) => transfer.onChunk(c));
   room.on('blob', (c: Parameters<EmoteTransfer['onBlob']>[0]) => transfer.onBlob(c));
   room.on('memberGone', (p: string) => transfer.memberGone(p));

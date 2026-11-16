@@ -141,7 +141,7 @@ interface Member {
  * The room: who is in it, what we send, and what we let through. Talks to the network only through transports,
  * which carry sealed packets. Events: 'state' (RoomStateCore), 'remotePing' (RemotePing), 'remoteEmote' (RemoteEmote), 'toast' (RoomToast),
  * 'remoteText' (RemoteText: text and alive lines), 'vote' (VoteMsg), 'ballot' (BallotMsg), 'saveCode' (canonical code | null: what "rejoin last room" should remember), 'emotes' (peer, announced hashes),
- * 'want' (WantMsg), 'chunk' (ChunkMsg), 'blob' (BlobMsg) and 'memberGone' (peer), which EmoteTransfer answers.
+ * 'want' (WantMsg, and 'lan' or 'shared': how it arrived), 'chunk' (ChunkMsg), 'blob' (BlobMsg) and 'memberGone' (peer), which EmoteTransfer answers.
  */
 export class RoomManager extends EventEmitter {
   /**
@@ -552,7 +552,8 @@ export class RoomManager extends EventEmitter {
     if (msg.t === 'want') {
       if (this.paused || m.muted || m.needsUpdate || msg.to !== this.self) return;
       if (!this.transferLimiter.allow(m.peer, TRANSFER_RATE)) return;
-      this.emit('want', msg);
+      // With the path it came by: a LAN that carries packets one way only is answered where the asker can be heard.
+      this.emit('want', msg, t.shared ? 'shared' : 'lan');
       return;
     }
     // A ballot is the one answer a vote waits for, so a muted member's still counts and so does our own pause;

@@ -90,7 +90,7 @@ function side(port: number, other: number, name: string, announced: () => string
     heard.add(peer);
     transfer.announced(peer, hashes, shared);
   });
-  room.on('want', (w: Parameters<EmoteTransfer['onWant']>[0]) => transfer.onWant(w));
+  room.on('want', (w: Parameters<EmoteTransfer['onWant']>[0], via: 'lan' | 'shared') => transfer.onWant(w, via));
   room.on('chunk', (c: Parameters<EmoteTransfer['onChunk']>[0]) => transfer.onChunk(c));
   room.on('memberGone', (peer: string) => transfer.memberGone(peer));
   return { room, transfer, cache, sounds, heard, dir, files };

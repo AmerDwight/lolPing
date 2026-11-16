@@ -758,9 +758,13 @@ const en = {
   traySync: (have: number, total: number, percent: number) =>
     (total === 0 ? 'Sync: nothing to fetch' : have >= total ? `Sync: done (${total} of ${total})` : `Sync: ${percent}% (${have} of ${total})`),
   traySyncOff: 'Sync: off (friends’ custom emotes are hidden)',
-  traySyncMember: (name: string, have: number, total: number, percent: number) =>
-    (total === 0 ? `${name}: nothing to fetch` : `${name}: ${percent}% (${have} of ${total})`),
-  traySyncMemberUnknown: (name: string) => `${name}: no report (an older version, or sync off)`,
+  /** One member's line: how they are reached, what we have of theirs, and what they say they have. */
+  traySyncMember: (name: string, path: string, got: { have: number; total: number } | null, theirs: string) =>
+    `${name} (${path}): ${got ? `got ${got.have} of their ${got.total}` : 'shares no files'}; ${theirs}`,
+  traySyncPath: (path: 'lan' | 'internet' | 'connecting' | 'unreachable') =>
+    ({ lan: 'LAN', internet: 'internet', connecting: 'connecting', unreachable: 'unreachable' })[path],
+  traySyncTheirs: (percent: number) => `they have ${percent}% of the room’s`,
+  traySyncTheirsUnknown: 'they don’t report (older version, or sync off)',
   traySyncUnshared: (n: number) => `${n} of your sounds ${n === 1 ? 'has' : 'have'} no copy to share yet`,
   traySyncNow: 'Sync now',
   traySyncTip: (percent: number) => `syncing ${percent}%`,
@@ -1529,8 +1533,10 @@ const zh: Strings = {
   traySync: (have, total, percent) =>
     (total === 0 ? '同步：没有需要获取的文件' : have >= total ? `同步：已完成（${total}/${total}）` : `同步：${percent}%（${have}/${total}）`),
   traySyncOff: '同步：已关闭（未显示好友的自定义表情）',
-  traySyncMember: (name, have, total, percent) => (total === 0 ? `${name}：没有需要获取的文件` : `${name}：${percent}%（${have}/${total}）`),
-  traySyncMemberUnknown: (name) => `${name}：未回报（旧版本，或已关闭同步）`,
+  traySyncMember: (name, path, got, theirs) => `${name}（${path}）：${got ? `已收到对方 ${got.have}/${got.total}` : '对方没有分享文件'}；${theirs}`,
+  traySyncPath: (path) => ({ lan: '局域网', internet: '互联网', connecting: '连接中', unreachable: '无法连接' })[path],
+  traySyncTheirs: (percent) => `对方已收到房间的 ${percent}%`,
+  traySyncTheirsUnknown: '对方未回报（旧版本，或已关闭同步）',
   traySyncUnshared: (n) => `你有 ${n} 个声音还没有可分享的副本`,
   traySyncNow: '立即同步',
   traySyncTip: (percent) => `同步中 ${percent}%`,

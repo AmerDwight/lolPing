@@ -21,7 +21,8 @@ export const ASSEMBLY_TIMEOUT_MS = 60_000;
  * Silence from the announcer before a want is repeated; at most this many re-asks, then the hash waits for the next
  * presence. While the announcer is sending anything at all it is working through its queue, and asking again would only
  * spend the tokens both sides need. Over relays the first re-ask asks for blob parts again; later ones fall back to
- * chunks, in case a relay refuses the longer messages.
+ * chunks, in case a relay refuses the longer messages. A member reached over LAN that stays silent is asked through
+ * the relays on the first and third re-ask: a LAN can carry packets one way only.
  */
 export const REASK_MS = 3_000;
 export const REASKS_MAX = 3;
@@ -149,13 +150,18 @@ export class EmoteTransfer {
     return this.announcers.get(peer)?.sounds.get(hash) ?? null;
   }
 
-  /** Another member asks for one of our stills or shared sounds. Only hashes in our own current announcement are served. */
-  onWant(w: WantMsg): void {
+  /**
+   * Another member asks for one of our stills or shared sounds. Only hashes in our own current announcement are served.
+   * `via` is how the want arrived, and the answer goes back the same way: a member we reach over LAN may only be able
+   * to hear us through a relay (a firewall that lets its packets out and none in), and then asks there.
+   */
+  onWant(w: WantMsg, via?: 'lan' | 'shared'): void {
     if (!this.deps.enabled()) return; // the switch stops both directions: nothing of ours leaves either
     const kind = this.ownKind(w.h);
     if (!kind) return;
-    const lane = this.deps.routeOf(w.peer);
-    if (lane !== 'lan' && lane !== 'shared') return;
+    const route = this.deps.routeOf(w.peer);
+    if (route !== 'lan' && route !== 'shared') return;
+    const lane = via ?? route;
     let queue = this.sends.get(w.h);
     if (!queue) {
       const bytes = this.deps.blob(w.h, kind); // read once per queue: a flood of wants can't make it read the disk each time
@@ -243,6 +249,18 @@ export class EmoteTransfer {
     return { have, total: wanted.size };
   }
 
+  /** The same count for one member's wheel: how many of the files they announce are here. Null for a member who announces none. */
+  progressOf(peer: string): { have: number; total: number } | null {
+    const a = this.announcers.get(peer);
+    if (!a || !this.deps.enabled()) return null;
+    const total = a.stills.size + a.sounds.size;
+    if (total === 0) return null;
+    let have = 0;
+    for (const hash of a.stills) if (this.deps.have(hash, 'still')) have++;
+    for (const hash of a.sounds.values()) if (this.deps.have(hash, 'sound')) have++;
+    return { have, total };
+  }
+
   /**
    * Starts over for everything that isn't here, now: assemblies ask again from the beginning, with blob parts first, and
    * whatever had been given up until the next presence is asked for at once. For the Sync now command.
@@ -305,9 +323,10 @@ export class EmoteTransfer {
    * False when it didn't go: no route, or no spare relay token (joining a room can find 9 hashes per member at once).
    * `big`: over a relay, say that blob parts are welcome; a LAN want never does, since they fit no LAN packet.
    */
-  private sendWant(peer: string, hash: string, need: readonly number[], big = false): boolean {
+  private sendWant(peer: string, hash: string, need: readonly number[], big = false, overRelay = false): boolean {
     const body = { t: 'want', to: peer, h: hash, need: [...need] };
-    const lane = this.deps.routeOf(peer);
+    const route = this.deps.routeOf(peer);
+    const lane = route === 'lan' && overRelay ? 'shared' : route;
     if (lane === 'lan') this.deps.sendToLan(peer, body);
     else if (lane === 'shared' && this.deps.spareSharedToken(RELAY_KEEP_TOKENS)) this.deps.broadcastShared(big ? { ...body, big: true } : body); // `to` addresses it, the seal protects it
     else return false;
@@ -375,7 +394,8 @@ export class EmoteTransfer {
         const { n, got } = a.chunks;
         const need = n === 0 ? [] : Array.from({ length: n }, (_, i) => i).filter((i) => !got.has(i));
         // Blob parts once more while nothing has come at all; after that, or once chunks have started, chunks.
-        if (!this.sendWant(a.ask, hash, need, a.reasks === 0 && n === 0)) continue; // waits for a token: not a re-ask yet
+        // The first and third re-ask go through the relays even to a LAN member, whose LAN answer may not get here.
+        if (!this.sendWant(a.ask, hash, need, a.reasks === 0 && n === 0, a.reasks % 2 === 0)) continue; // waits for a token: not a re-ask yet
         a.reasks++;
         a.lastAt = now;
       }

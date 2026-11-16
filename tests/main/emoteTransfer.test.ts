@@ -644,3 +644,53 @@ describe('EmoteTransfer: progress and Sync now', () => {
     expect(h.out.map((o) => o.body.h)).toEqual([hashOf(a)]);
   });
 });
+
+describe('EmoteTransfer: a LAN that carries packets one way', () => {
+  it('asks a silent LAN member through the relays on the first re-ask, welcoming blob parts, and takes the answer from there', async () => {
+    const h = harness();
+    const image = still(600, 30);
+    h.routes.set(ANNOUNCER, 'lan');
+    h.setTokens(1000);
+    h.t.announced(ANNOUNCER, [hashOf(image)]);
+    expect(h.out.map((o) => o.kind)).toEqual(['lan']);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.out.map((o) => [o.kind, o.body.big])).toEqual([['lan', undefined], ['shared', true]]);
+    await vi.advanceTimersByTimeAsync(3000);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(h.out.map((o) => o.kind)).toEqual(['lan', 'shared', 'lan', 'shared']); // both ways in turn until it gives up
+    h.t.onBlob(blobOf(hashOf(image), 0, 1, image)); // the relay's answer
+    expect(h.cache.get(hashOf(image))).toEqual(image);
+  });
+
+  it('answers a want on the path it arrived by, whatever path we would reach the asker on', async () => {
+    const h = harness();
+    const image = still(600, 31);
+    h.files.set(hashOf(image), image);
+    h.setAnnounced([hashOf(image)]);
+    h.setTokens(1000);
+    h.routes.set(REQUESTER, 'lan'); // we hear them on LAN, but they asked through a relay: our LAN packets don't reach them
+    h.t.onWant({ ...wantOf(hashOf(image), []), big: true }, 'shared');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(h.out.map((o) => [o.kind, o.body.t])).toEqual([['shared', 'blob']]);
+
+    h.out.length = 0;
+    h.routes.set(REQUESTER, 'shared');
+    h.t.onWant(wantOf(hashOf(image), []), 'lan'); // and the other way round
+    await vi.advanceTimersByTimeAsync(200);
+    expect(h.out.map((o) => [o.kind, o.body.t])).toEqual([['lan', 'chunk']]);
+  });
+
+  it('counts what is here of one member’s wheel', () => {
+    const h = harness();
+    const [a, b] = [still(600, 32), still(600, 33)];
+    const sound = opusSound(1, 32);
+    h.routes.set(ANNOUNCER, 'lan');
+    h.t.announced(ANNOUNCER, [hashOf(a), hashOf(b)], [hashOf(sound), '']);
+    h.t.announced(REQUESTER, []);
+    expect(h.t.progressOf(ANNOUNCER)).toEqual({ have: 0, total: 3 });
+    h.t.onChunk(chunkOf(hashOf(a), 0, 1, a));
+    expect(h.t.progressOf(ANNOUNCER)).toEqual({ have: 1, total: 3 });
+    expect(h.t.progressOf(REQUESTER)).toBeNull(); // nothing on their wheel to fetch
+    expect(h.t.progressOf('nobody')).toBeNull();
+  });
+});
