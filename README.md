@@ -44,7 +44,7 @@ lolPing is built for Windows 11, 64-bit. Windows 10 may work, but it isn't teste
 
 #### Portable (no install)
 
-Download `lolPing-<version>-portable.exe` instead and run it from any folder, including a USB drive. It keeps its settings, emotes and caches in a `data` folder next to the `.exe`, so nothing is written to `%APPDATA%` or the registry. Two things differ from the installed version: it doesn't update itself (download the next version from the releases page and replace the `.exe`; the `data` folder carries over), and it can't launch at startup. The portable `.exe` unpacks to a temp folder on every start, so it opens a second or two slower than the installed version.
+Download `lolPing-<version>-portable.exe` instead and run it from any folder, including a USB drive. It keeps its settings, emotes and caches in a `data` folder next to the `.exe`, so nothing is written to `%APPDATA%` or the registry. Two things differ from the installed version: it doesn't update itself (quit lolPing from the tray first, then download the next version from the releases page and replace the `.exe`; the `data` folder carries over), and it can't launch at startup. The portable `.exe` unpacks to a temp folder on every start, so it opens a second or two slower than the installed version.
 
 A portable and an installed lolPing can run at the same time, each with its own settings. To make an unpacked copy (the `release/win-unpacked` folder of a `npm run dist`) portable, put an empty file named `portable.txt` next to `lolPing.exe`.
 
