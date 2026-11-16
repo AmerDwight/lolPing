@@ -43,6 +43,15 @@ class Writable extends EventEmitter {
     super();
   }
 
+  // Callers check these before writing, as src/main/inputBridge.ts does: without them nothing reaches the process.
+  get writable(): boolean {
+    return !this.ended;
+  }
+
+  get destroyed(): boolean {
+    return this.ended;
+  }
+
   write(data: string | Uint8Array, enc?: string | ((e?: Error | null) => void), cb?: (e?: Error | null) => void): boolean {
     const done = typeof enc === 'function' ? enc : cb;
     if (this.ended) {
