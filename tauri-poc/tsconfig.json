@@ -1,4 +1,4 @@
 {
   "extends": "../tsconfig.json",
-  "include": ["web"]
+  "include": ["web", "../src/main/teammate/files/pdfjsWorker.d.ts"]
 }

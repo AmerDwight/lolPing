@@ -1,23 +1,31 @@
 # lolPing on Tauri: proof of concept
 
-A test of whether lolPing's Windows portable build can move from Electron to Tauri 2 and get smaller. It covers the
-overlays and the input helper: the ping wheel, the emote wheel, pings, emotes and their sounds. Settings, rooms,
-the teammate, updates and macOS are not part of it.
+A test of whether lolPing's Windows portable build can move from Electron to Tauri 2 and get smaller, while the
+app's own code stays as it is.
 
 How it is put together:
 
-- `src-tauri/` is the shell Electron's main process was: it opens windows, runs the hook helper and owns the tray.
-  The helper is embedded in the executable and written to the app data folder on first start, so the portable build
-  is one file.
-- `web/core.ts` runs in a hidden page. It uses the Electron app's own `src/main/overlayManager.ts`, unchanged:
-  `build-web.mjs` swaps its `electron` import for `web/electronShim.ts`, which does the same window calls through
-  the shell.
-- `web/overlayShim.ts` takes the place of `src/preload/overlay.ts`. The overlay page itself is the Electron app's
-  page, unchanged but for its CSP.
+- `src-tauri/` is a small Rust shell. It opens windows, runs processes (the hook helper), owns UDP sockets, the tray
+  and its menu, and answers file, clipboard, display and network questions. The helper is embedded in the executable
+  and written to the app data folder on first start, so the portable build is one file.
+- A hidden page runs the Electron main process, `src/main/index.ts`, unchanged. `build-web.mjs` bundles it with
+  stand-ins for what it imports from Node and Electron:
+  - `web/node/` has `fs`, `path`, `os`, `crypto`, `child_process`, `dgram`, `events` and the rest. Calls that must
+    be synchronous in Node go to the shell as a synchronous request; the others go through Tauri commands.
+  - `web/electron/main.ts` has `app`, `BrowserWindow`, `ipcMain`, `screen`, `Tray`, `Menu`, `nativeImage` and the
+    smaller modules. `web/electron/renderer.ts` has `ipcRenderer` and `contextBridge`, so the app's own preloads run
+    in each window as they are.
+- Room encryption and signing use the noble libraries. `tests/tauri-poc/nodeCrypto.test.ts` checks them byte for
+  byte against Node, so a Tauri peer and an Electron peer understand each other.
+- The portable build keeps its data in a `data` folder next to the executable, as the Electron portable build does.
+
+Not done: the teammate, custom emote images in the wheel, the single-instance lock, updates, secure storage of
+keys, file dialogs, macOS.
 
 ## Build
 
 ```bash
+npm ci && npm ci --prefix tauri-poc
 npm run build:helper
 npx electron-vite build
 node tauri-poc/build-web.mjs
@@ -29,6 +37,12 @@ which Windows 11 includes.
 
 ## Test
 
-`.github/workflows/tauri-poc.yml` builds it on a Windows runner and runs `e2e/e2e_win.py`, which drives the real
-mouse and keyboard (SendInput) and reads the overlay page over the DevTools protocol. The same test runs on the
-Electron app as the control.
+`.github/workflows/tauri-poc.yml` builds it on a Windows runner and runs:
+
+- `e2e/e2e_win.py` on the Tauri build and on the Electron build as the control. It drives the real mouse and
+  keyboard (SendInput) and reads the pages over the DevTools protocol: pass-through, pings, emotes, latency,
+  memory, startup time.
+- `e2e/e2e_room.py` on both portable builds together. The Tauri build changes a setting and checks
+  `data/settings.json`, creates a room, the Electron build joins it, and each sends a ping that the other draws.
+
+The `tests/tauri-poc` unit tests need `npm ci --prefix tauri-poc` first.

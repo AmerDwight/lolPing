@@ -9,13 +9,21 @@ export interface Monitor {
   height: number;
   scale: number;
   primary: boolean;
+  /** The part outside the taskbar, physical. */
+  work?: Rect;
 }
 
 /** The part of Electron's Display the main-process code reads, plus the physical rect behind it. */
 export interface ShimDisplay {
   id: number;
+  label: string;
   bounds: Rect;
+  workArea: Rect;
+  size: { width: number; height: number };
+  workAreaSize: { width: number; height: number };
   scaleFactor: number;
+  rotation: number;
+  internal: boolean;
   phys: Rect;
   primary: boolean;
 }
@@ -26,13 +34,23 @@ export interface ShimDisplay {
  * so the overlay-local points come out the same.
  */
 export function toDisplays(monitors: readonly Monitor[]): ShimDisplay[] {
-  return monitors.map((m) => ({
-    id: m.id,
-    scaleFactor: m.scale,
-    primary: m.primary,
-    phys: { x: m.x, y: m.y, width: m.width, height: m.height },
-    bounds: { x: m.x / m.scale, y: m.y / m.scale, width: m.width / m.scale, height: m.height / m.scale },
-  }));
+  return monitors.map((m) => {
+    const dip = (r: Rect): Rect => ({ x: r.x / m.scale, y: r.y / m.scale, width: r.width / m.scale, height: r.height / m.scale });
+    const phys = { x: m.x, y: m.y, width: m.width, height: m.height };
+    const bounds = dip(phys);
+    const workArea = dip(m.work ?? phys);
+    return {
+      id: m.id, label: `Display ${m.id}`, scaleFactor: m.scale, primary: m.primary, rotation: 0, internal: false, phys, bounds,
+      workArea, size: { width: bounds.width, height: bounds.height }, workAreaSize: { width: workArea.width, height: workArea.height },
+    };
+  });
+}
+
+/** A physical point in DIPs, by the display it is on (or nearest). */
+export function physToDip(p: { x: number; y: number }, displays: readonly ShimDisplay[]): { x: number; y: number } {
+  if (displays.length === 0) return { ...p };
+  const d = displays.reduce((a, b) => (distSq(b.phys, p.x, p.y) < distSq(a.phys, p.x, p.y) ? b : a));
+  return { x: d.bounds.x + (p.x - d.phys.x) / d.scaleFactor, y: d.bounds.y + (p.y - d.phys.y) / d.scaleFactor };
 }
 
 const distSq = (r: Rect, x: number, y: number): number => {

@@ -1,0 +1,11 @@
+{
+  "name": "lolping-tauri-poc",
+  "private": true,
+  "description": "Build-time dependencies of the Tauri proof of concept: synchronous crypto for the main-process code that runs in a page.",
+  "type": "module",
+  "devDependencies": {
+    "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0"
+  }
+}
