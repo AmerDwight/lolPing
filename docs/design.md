@@ -189,6 +189,7 @@ All coordinates are **physical screen pixels**.
   - Each event is routed to the overlay whose display contains the press point. A wheel near a screen edge may be clipped; it is not clamped, the same as in League.
 - **Coordinates:** `screen.screenToDipPoint({x,y})` converts physical pixels to DIP, then the display's DIP origin is subtracted to get overlay-local CSS pixels. Wheel moves are converted relative to the *wheel's* display, even when the cursor crosses onto another monitor.
 - **Toggle feedback:** tray icon state (normal or dimmed), the tray menu checkbox, and a small Fluent toast saying "Pings on" or "Pings off".
+- **Language packs:** the packages ship Chromium's `en-US`, `zh-CN` and `zh-TW` packs only (`build.electronLanguages` in `package.json`; `zh_CN` and `zh_TW` are the same two under their macOS folder names). The other 52 are about 46 MB installed on Windows and 7 MB of the installer. The automatic language goes by `app.getLocale()` and `navigator.language`, and Chromium answers those with a pack it has, so a Chinese system needs its pack to stay Chinese; every other system already got the English UI and now gets Chromium's own texts in English too.
 - **Startup:** "Launch at Windows startup" uses `app.setLoginItemSettings` with the argument `--hidden`. A manual launch opens the settings window; a `--hidden` launch stays in the tray.
 
 ## 7. Overlay renderer
