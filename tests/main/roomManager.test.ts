@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
-  makeIdentity, open, peerIdOf, publicKeyOf, seal, signBody, verifyBody, type RoomIdentity, type RoomKeys,
+  makeIdentity, MAX_PACKET, MAX_SHARED_PACKET, open, peerIdOf, publicKeyOf, seal, signBody, verifyBody, type RoomIdentity, type RoomKeys,
 } from '../../src/main/roomCrypto';
 import {
   MAX_MEMBERS, RoomManager, type RemoteEmote, type RemotePing, type RemoteText, type RoomToast,
@@ -281,7 +281,7 @@ describe('members', () => {
 
   /** A presence sealed with the room key but stamped an hour ago: a captured packet replayed later, or a bad clock. */
   const stalePresence = (r: Remote, name = 'Old') => lan.deliver(r.key, seal(KEYS.msgKey, encodeMessage({
-    t: 'presence', peer: r.peer, seq: ++r.seq, ts: Date.now() - 3_600_000, proto: 1, app: '1', name, color: 0, status: 'on', em: [], nf: [],
+    t: 'presence', peer: r.peer, seq: ++r.seq, ts: Date.now() - 3_600_000, proto: 1, app: '1', name, color: 0, status: 'on', em: [], sn: [], nf: [],
   })));
 
   it('never adds, answers or counts a member from stale packets, so replays cannot fill the room', async () => {
@@ -678,6 +678,57 @@ describe('internet over a shared transport', () => {
     expect(inet.state().phase).toBe('active');
   }
 
+  it('hands on a want with the path it arrived by', async () => {
+    await joinNow();
+    const far = new Remote('2222222222222222', 'net:b', lan);
+    netPresence(far);
+    const near = new Remote('1111111111111111', 'lan:a', lan);
+    near.presence();
+    const seen: unknown[] = [];
+    inet.on('want', (_w: RoomMessage, via: string) => seen.push(via));
+    const want = (r: Remote): Buffer => r.packet({ t: 'want', to: inet.self, h: '0123456789abcdef0123456789abcdef', need: [] });
+    net.deliver(far.key, want(far));
+    lan.deliver(near.key, want(near));
+    net.deliver('net:x', want(near)); // a LAN member whose LAN packets don't reach us asks through a relay
+    expect(seen).toEqual(['shared', 'lan', 'shared']);
+  });
+
+  it('takes a long blob part from a relay only: never from LAN, and never any other message that long', async () => {
+    await joinNow();
+    const blobs: RoomMessage[] = [];
+    const texts: unknown[] = [];
+    inet.on('blob', (b: RoomMessage) => blobs.push(b));
+    inet.on('remoteText', (t: unknown) => texts.push(t));
+    const far = new Remote('2222222222222222', 'net:b', lan);
+    netPresence(far);
+    const near = new Remote('1111111111111111', 'lan:a', lan);
+    near.presence();
+    const long = (r: Remote, m: Record<string, unknown>): Buffer =>
+      seal(KEYS.msgKey, encodeMessage({ peer: r.peer, seq: ++r.seq, ts: Date.now(), ...m } as RoomMessage), MAX_SHARED_PACKET);
+    const part = { t: 'blob', h: '0123456789abcdef0123456789abcdef', i: 0, n: 3, b: Buffer.alloc(6000, 5).toString('base64') };
+
+    net.deliver(far.key, long(far, part));
+    expect(blobs).toHaveLength(1);
+    expect(blobs[0]).toMatchObject({ t: 'blob', peer: far.peer, i: 0, n: 3 });
+    lan.deliver(near.key, long(near, part)); // no LAN packet is that long
+    expect(blobs).toHaveLength(1);
+    // A short message padded past the ordinary cap is refused even from a relay; unknown fields would otherwise carry it.
+    net.deliver(far.key, long(far, { t: 'text', text: 'hi', d: 1, x: 0.5, y: 0.5, pad: 'x'.repeat(4000) }));
+    expect(texts).toHaveLength(0);
+  });
+
+  it('seals a blob part for relays at its own cap, and still refuses anything else that long', async () => {
+    await joinNow();
+    netPresence(new Remote('2222222222222222', 'net:b', lan));
+    net.sent = [];
+    const b = Buffer.alloc(6000, 5).toString('base64');
+    inet.broadcastShared({ t: 'blob', h: '0123456789abcdef0123456789abcdef', i: 0, n: 3, b });
+    inet.broadcastShared({ t: 'chunk', h: '0123456789abcdef0123456789abcdef', i: 0, n: 3, b });
+    expect(net.sent).toHaveLength(1);
+    expect(net.sent[0].packet.length).toBeGreaterThan(MAX_PACKET);
+    expect(decodeMessage(open(KEYS.msgKey, net.sent[0].packet, MAX_SHARED_PACKET)!)).toMatchObject({ t: 'blob', b });
+  });
+
   it('sends a ping once over a shared transport, however many members use it', async () => {
     await joinNow();
     netPresence(new Remote('1111111111111111', 'net:a', lan));
@@ -860,20 +911,23 @@ describe('internet over a shared transport', () => {
 
 
 describe('emote transfers', () => {
-  let emotes: { peer: string; hashes: string[] }[];
+  let emotes: { peer: string; hashes: string[]; sounds: string[] }[];
   let wants: RoomMessage[];
   let chunks: RoomMessage[];
   const hash = '0123456789abcdef0123456789abcdef';
+  const sound = 'fedcba9876543210fedcba9876543210';
 
-  /** The room under test, with the self peer id pinned so `want` addressing can be asserted. */
-  const make = (): RoomManager => {
+  /** The room under test, with the self peer id pinned so `want` addressing can be asserted. `sounds`: what it announces beside its hash. */
+  const make = (sounds?: () => string[], syncProgress?: () => { have: number; total: number } | null): RoomManager => {
     const r = new RoomManager({
       transports: [lan], now: () => Date.now(), randomBytes: (n) => new Uint8Array(n).fill(0xab),
       deriveKeys: async () => KEYS, appVersion: '0.5.1', profile: () => profile,
       resolveTarget: (d) => (d === 1 ? { displayId: 100, width: 1920, height: 1080 } : null),
       announceEmotes: () => [hash],
+      ...(sounds ? { announceSounds: sounds } : {}),
+      ...(syncProgress ? { syncProgress } : {}),
     });
-    r.on('emotes', (peer: string, hashes: string[]) => emotes.push({ peer, hashes }));
+    r.on('emotes', (peer: string, hashes: string[], heard: string[]) => emotes.push({ peer, hashes, sounds: heard }));
     r.on('want', (w: RoomMessage) => wants.push(w));
     r.on('chunk', (c: RoomMessage) => chunks.push(c));
     return r;
@@ -901,9 +955,54 @@ describe('emote transfers', () => {
     await joinActive();
     const alex = new Remote('1111111111111111', 'lan:a', lan);
     alex.presence({ em: [hash] });
-    expect(emotes.at(-1)).toEqual({ peer: '1111111111111111', hashes: [hash] });
+    expect(emotes.at(-1)).toEqual({ peer: '1111111111111111', hashes: [hash], sounds: [''] });
     const mine = sentMessages('lan:a').find((m) => m.t === 'presence');
     expect(mine).toMatchObject({ em: [hash] });
+  });
+
+  /** Our presences as they went out, before validation fills in what they left out. */
+  const rawPresences = (): string[] =>
+    lan.sent.map((s) => open(KEYS.msgKey, s.packet)!.toString('utf8')).filter((text) => text.includes('"t":"presence"'));
+
+  it('announces each hash’s shared sound beside it, and reads a member’s', async () => {
+    room.quit();
+    room = make(() => [sound]);
+    await joinActive();
+    const alex = new Remote('1111111111111111', 'lan:a', lan);
+    alex.presence({ em: [hash], sn: [sound] });
+    expect(emotes.at(-1)).toEqual({ peer: '1111111111111111', hashes: [hash], sounds: [sound] });
+    expect(sentMessages('lan:a').find((m) => m.t === 'presence')).toMatchObject({ em: [hash], sn: [sound] });
+  });
+
+  it('tells the room how much of it is here, and shows each member’s own count', async () => {
+    room.quit();
+    let mine: { have: number; total: number } | null = { have: 3, total: 7 };
+    room = make(undefined, () => mine);
+    await joinActive();
+    expect(rawPresences().at(-1)).toContain('"sy":[3,7]');
+    const alex = new Remote('1111111111111111', 'lan:a', lan);
+    alex.presence({ sy: [5, 9] });
+    new Remote('2222222222222222', 'lan:b', lan).presence(); // an app that doesn't say
+    expect(room.state().members.map((m) => m.sync)).toEqual([{ have: 3, total: 7 }, { have: 5, total: 9 }, null]);
+    alex.presence(); // it stopped saying: the old count must not linger
+    expect(room.state().members[1].sync).toBeNull();
+
+    mine = null; // friends' emotes switched off: nothing is fetched, so nothing is claimed
+    lan.sent = [];
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(rawPresences().length).toBeGreaterThan(0);
+    expect(rawPresences().some((text) => text.includes('"sy"'))).toBe(false);
+  });
+
+  it('leaves sounds out of a presence when no announced emote has one, or when they don’t line up with the hashes', async () => {
+    for (const sounds of [undefined, () => [''], () => [sound, sound]]) {
+      room.quit();
+      lan.sent = [];
+      room = make(sounds);
+      await joinActive();
+      expect(rawPresences().length).toBeGreaterThan(0);
+      expect(rawPresences().some((text) => text.includes('"sn"'))).toBe(false);
+    }
   });
 
   it('hands a want addressed to us to the transfer layer, and drops one aimed elsewhere', async () => {
@@ -1252,7 +1351,7 @@ describe('signed members', () => {
     const other = makeIdentity(new Uint8Array(32).fill(10));
     const body = encodeMessage({
       peer: liar.peer, seq: 1, ts: Date.now(), t: 'presence', proto: 1, app: '0.5.2', name: 'Liar', color: 1, status: 'on',
-      em: [], nf: [], pk: other.pk.toString('base64'),
+      em: [], sn: [], nf: [], pk: other.pk.toString('base64'),
     });
     lan.deliver('lan:l', seal(KEYS.msgKey, new TextEncoder().encode(joinSigned(new TextDecoder().decode(body), signBody(other, body)))));
     expect(members()).not.toContain(liar.peer);

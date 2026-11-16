@@ -12,7 +12,7 @@ import {
 import { RateLimiter } from './rateLimiter';
 import { ReplayGuard } from './replayGuard';
 import {
-  makeIdentity, open, peerIdOf, publicKeyOf, seal, signBody, verifyBody, type RoomIdentity, type RoomKeys,
+  makeIdentity, MAX_PACKET, MAX_SHARED_PACKET, open, peerIdOf, publicKeyOf, seal, signBody, verifyBody, type RoomIdentity, type RoomKeys,
 } from './roomCrypto';
 import type { PeerKey, Transport, TransportStatus } from './transport';
 
@@ -106,6 +106,10 @@ export interface RoomDeps {
   resolveTarget(d: number): { displayId: number; width: number; height: number } | null;
   /** The 32-hex hashes our presence announces: the custom emotes on our wheel and centre. Read on every presence. */
   announceEmotes(): readonly string[];
+  /** For each of those hashes, in order, the hash of its shared sound or '' for none. Left out by tools that share none. */
+  announceSounds?(): readonly string[];
+  /** How many of the files the room announces to us are here; null when we fetch none. Left out by tools that fetch none. */
+  syncProgress?(): { have: number; total: number } | null;
 }
 
 interface Member {
@@ -122,6 +126,8 @@ interface Member {
   muted: boolean;
   /** The custom emote hashes their last presence announced. */
   em: string[];
+  /** Their own count of files here and announced, from their last presence. */
+  sync: { have: number; total: number } | null;
   firstSeen: number;
   /** Ever heard over the internet: dropped after the longer silence. */
   viaInternet: boolean;
@@ -135,7 +141,7 @@ interface Member {
  * The room: who is in it, what we send, and what we let through. Talks to the network only through transports,
  * which carry sealed packets. Events: 'state' (RoomStateCore), 'remotePing' (RemotePing), 'remoteEmote' (RemoteEmote), 'toast' (RoomToast),
  * 'remoteText' (RemoteText: text and alive lines), 'vote' (VoteMsg), 'ballot' (BallotMsg), 'saveCode' (canonical code | null: what "rejoin last room" should remember), 'emotes' (peer, announced hashes),
- * 'want' (WantMsg), 'chunk' (ChunkMsg) and 'memberGone' (peer), which EmoteTransfer answers.
+ * 'want' (WantMsg, and 'lan' or 'shared': how it arrived), 'chunk' (ChunkMsg), 'blob' (BlobMsg) and 'memberGone' (peer), which EmoteTransfer answers.
  */
 export class RoomManager extends EventEmitter {
   /**
@@ -301,11 +307,14 @@ export class RoomManager extends EventEmitter {
     }
   }
 
-  /** One sealed broadcast on every shared transport: a relay reaches the whole room. Chunk pacing is the caller's job. */
+  /**
+   * One sealed broadcast on every shared transport: a relay reaches the whole room. Chunk pacing is the caller's job.
+   * A `blob` part may be as long as MAX_SHARED_PACKET; everything else keeps the ordinary cap.
+   */
   broadcastShared(body: Record<string, unknown>): void {
     if (this.phase === 'idle' || !this.keys) return;
     try {
-      const packet = this.seal(body);
+      const packet = this.seal(body, body.t === 'blob' ? MAX_SHARED_PACKET : MAX_PACKET);
       for (const t of this.active) if (t.shared) t.broadcast(packet);
     } catch {
       // dropped, as above
@@ -365,7 +374,7 @@ export class RoomManager extends EventEmitter {
     this.emitState();
   }
 
-  /** Name or colour changed: tell everyone now. */
+  /** Something our presence says changed (name, colour, switched-off features, an emote's shared sound): tell everyone now. */
   profileChanged(): void {
     this.announce();
     this.emitState();
@@ -380,12 +389,12 @@ export class RoomManager extends EventEmitter {
       {
         peer: this.self, name: p.name, color: p.color, rgb: p.rgb, path: 'lan', status: this.status(),
         needsUpdate: false, noEmotes: false, noChat: false, textOff: p.nf.includes('text'), votesOff: p.nf.includes('votes'),
-        muted: false, self: true,
+        muted: false, sync: this.deps.syncProgress?.() ?? null, self: true,
       },
       ...[...this.members.values()].map((m) => ({
         peer: m.peer, name: m.name, color: m.color, rgb: m.rgb, path: this.path(m, now), status: m.status,
         needsUpdate: m.needsUpdate, noEmotes: m.noEmotes, noChat: m.noChat, textOff: m.textOff, votesOff: m.votesOff,
-        muted: m.muted, self: false,
+        muted: m.muted, sync: m.sync, self: false,
       })),
     ];
     return {
@@ -500,16 +509,19 @@ export class RoomManager extends EventEmitter {
 
   private onPacket(t: Transport, key: PeerKey, packet: Uint8Array): void {
     if (!this.keys) return;
-    const plain = open(this.keys.msgKey, packet);
+    // Only a relay may bring a long packet, and only a blob part may be one.
+    const plain = open(this.keys.msgKey, packet, t.shared ? MAX_SHARED_PACKET : MAX_PACKET);
     const decoded = plain && decodeSigned(plain);
     if (!decoded || decoded.msg.peer === this.self) return;
     const { msg, body, sig } = decoded;
-    // Chunks are never signed (a signature wouldn't fit), and needn't be: a still is checked against its hash when
-    // assembled. So whoever a chunk claims to be from, it never moves a replay window, a liveness clock or a route.
-    if (msg.t === 'chunk') {
+    if (packet.length > MAX_PACKET && msg.t !== 'blob') return;
+    // Chunks and blob parts are never signed (a signature wouldn't fit a chunk), and needn't be: a still or sound is
+    // checked against its hash when assembled. So whoever one claims to be from, it never moves a replay window, a
+    // liveness clock or a route.
+    if (msg.t === 'chunk' || msg.t === 'blob') {
       const m = this.members.get(msg.peer);
       if (!m || this.paused || m.muted || m.needsUpdate || !this.transferLimiter.allow(m.peer, TRANSFER_RATE)) return;
-      this.emit('chunk', msg);
+      this.emit(msg.t, msg);
       return;
     }
     let pk: KeyObject | null = null;
@@ -540,7 +552,8 @@ export class RoomManager extends EventEmitter {
     if (msg.t === 'want') {
       if (this.paused || m.muted || m.needsUpdate || msg.to !== this.self) return;
       if (!this.transferLimiter.allow(m.peer, TRANSFER_RATE)) return;
-      this.emit('want', msg);
+      // With the path it came by: a LAN that carries packets one way only is answered where the asker can be heard.
+      this.emit('want', msg, t.shared ? 'shared' : 'lan');
       return;
     }
     // A ballot is the one answer a vote waits for, so a muted member's still counts and so does our own pause;
@@ -594,7 +607,7 @@ export class RoomManager extends EventEmitter {
       if (!t.shared && this.membersAt(t.kind, key) >= 2) return;
       m = {
         peer: msg.peer, name: msg.name, color: msg.color, rgb: msg.rgb ?? null, status: msg.status,
-        needsUpdate: false, noEmotes: false, noChat: false, textOff: false, votesOff: false, muted: false, em: [],
+        needsUpdate: false, noEmotes: false, noChat: false, textOff: false, votesOff: false, muted: false, em: [], sync: null,
         firstSeen: this.deps.now(), viaInternet: false, paths: {}, pk: null,
       };
       this.members.set(m.peer, m);
@@ -614,9 +627,10 @@ export class RoomManager extends EventEmitter {
     m.textOff = msg.nf.includes('text');
     m.votesOff = msg.nf.includes('votes');
     m.em = msg.em;
+    m.sync = msg.sy ? { have: msg.sy[0], total: msg.sy[1] } : null;
     // Every presence, so a hash whose assembly gave up is asked for again: EmoteTransfer skips what is already here.
-    // A paused lolPing neither fetches nor serves stills; the next presence after unpausing starts prefetch again.
-    if (!this.paused) this.emit('emotes', m.peer, [...m.em]);
+    // A paused lolPing neither fetches nor serves stills or sounds; the next presence after unpausing starts prefetch again.
+    if (!this.paused) this.emit('emotes', m.peer, [...m.em], [...msg.sn]);
     this.heard(m, t, key);
     if (!this.answered.has(key)) {
       this.answered.add(key);
@@ -694,9 +708,15 @@ export class RoomManager extends EventEmitter {
 
   private presencePacket(): Buffer {
     const p = this.deps.profile();
+    const em = [...this.deps.announceEmotes()];
+    const sn = this.deps.announceSounds?.() ?? [];
+    const sync = this.deps.syncProgress?.() ?? null;
     return this.seal({
       t: 'presence', proto: PROTOCOL_VERSION, app: this.deps.appVersion, name: p.name, color: p.color, status: this.status(),
-      em: [...this.deps.announceEmotes()], pk: this.identity.pk.toString('base64'),
+      em, pk: this.identity.pk.toString('base64'),
+      // Left out when no announced emote has a shared sound: most presences then stay as small as before.
+      ...(sn.length === em.length && sn.some((h) => h !== '') ? { sn: [...sn] } : {}),
+      ...(sync ? { sy: [sync.have, sync.total] } : {}),
       // Left out when nothing is off, so a presence to an older peer carries nothing new.
       ...(p.nf.length ? { nf: [...p.nf] } : {}),
       // Left out rather than sent as null: a peer on an older build ignores it either way, and this keeps the packet small.
@@ -752,12 +772,12 @@ export class RoomManager extends EventEmitter {
     }
   }
 
-  private seal(body: Record<string, unknown>): Buffer {
+  private seal(body: Record<string, unknown>, max = MAX_PACKET): Buffer {
     const msg = { peer: this.self, seq: ++this.seq, ts: this.deps.now(), ...body } as RoomMessage;
     const bytes = encodeMessage(msg);
-    if (msg.t === 'chunk') return seal(this.keys!.msgKey, bytes);
+    if (msg.t === 'chunk' || msg.t === 'blob') return seal(this.keys!.msgKey, bytes, max);
     const signed = joinSigned(new TextDecoder().decode(bytes), signBody(this.identity, bytes));
-    return seal(this.keys!.msgKey, new TextEncoder().encode(signed));
+    return seal(this.keys!.msgKey, new TextEncoder().encode(signed), max);
   }
 
   private emitState(): void {

@@ -48,7 +48,7 @@ async function soundFile(id: EmoteRef, file: File): Promise<SoundError | null> {
   try {
     const prepared = await prepareSound(file);
     if (!prepared.ok) return prepared.error;
-    const result = await api.setEmoteSound(id, prepared.bytes);
+    const result = await api.setEmoteSound(id, prepared.bytes, prepared.share);
     return result.ok ? null : result.error;
   } catch {
     return 'disk';

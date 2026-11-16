@@ -164,12 +164,14 @@ export function registerSettingsIpc(d: SettingsIpcDeps): void {
     // Normalising the shorter list puts each wheel slot (and the click emote) that used it back to a default.
     d.store.update({ customEmotes: d.store.get().customEmotes.filter((c) => c.id !== id) });
   }));
-  ipcMain.handle(SETTINGS_CH.emoteSound, (_e, id: unknown, raw: unknown) => oneAtATime(async (): Promise<SoundResult> => {
+  ipcMain.handle(SETTINGS_CH.emoteSound, (_e, id: unknown, raw: unknown, share: unknown) => oneAtATime(async (): Promise<SoundResult> => {
     if (!isCustomRef(id) || !d.store.get().customEmotes.some((c) => c.id === id)) return { ok: false, error: 'type' };
     if (raw !== null && !(raw instanceof Uint8Array)) return { ok: false, error: 'type' };
-    const error = await d.library.setSound(id, raw);
-    if (error) return { ok: false, error };
-    const withSound = ({ sound: _old, ...c }: CustomEmote): CustomEmote => (raw === null ? c : { ...c, sound: true });
+    // The copy for rooms is optional: anything that isn't bytes means the sound stays on this computer.
+    const saved = await d.library.setSound(id, raw, share instanceof Uint8Array ? share : null);
+    if (!saved.ok) return { ok: false, error: saved.error };
+    const withSound = ({ sound: _old, share: _copy, ...c }: CustomEmote): CustomEmote =>
+      (raw === null ? c : { ...c, sound: true, ...(saved.share ? { share: saved.share } : {}) });
     d.store.update({ customEmotes: d.store.get().customEmotes.map((c) => (c.id === id ? withSound(c) : c)) });
     return { ok: true };
   }));

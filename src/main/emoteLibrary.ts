@@ -1,18 +1,22 @@
 import { createHash } from 'node:crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AUDIO_TYPES, sniffAudio } from '../shared/audioSniff';
 import {
-  ANIM_MAX_BYTES, ANIM_MAX_SIDE, CUSTOM_NAME_MAX, MAX_CUSTOM_EMOTES, SOUND_MAX_BYTES, STILL_MAX_BYTES, STILL_SIDE, customAnimUrl,
-  customHash, customSoundUrl, customStillUrl, isBundledEmote, isCustomRef, type CustomEmote, type EmoteArt, type EmoteFile,
-  type EmoteRef, type ImportError, type SoundError,
+  ANIM_MAX_BYTES, ANIM_MAX_SIDE, CUSTOM_NAME_MAX, MAX_CUSTOM_EMOTES, SHARED_SOUND_MAX_BYTES, SHARED_SOUND_MAX_S, SOUND_MAX_BYTES,
+  STILL_MAX_BYTES, STILL_SIDE, customAnimUrl, customHash, customSoundUrl, customStillUrl, isBundledEmote, isCustomRef,
+  type CustomEmote, type EmoteArt, type EmoteFile, type EmoteRef, type ImportError, type SoundError,
 } from '../shared/emotes';
 import { gifExtent, isAnimatedWebp, sniffImage, webpSize } from '../shared/imageSniff';
+import { oggOpusInfo } from '../shared/oggOpus';
 import { sanitizeName } from '../shared/roomProtocol';
 import { isFile } from './fileState';
 import { renameWithRetry } from './settingsStore';
 
 const soundNames = (hash: string): string[] => AUDIO_TYPES.map((t) => `${hash}.sound.${t}`);
+/** The small copy of an emote's sound that room members get, named after the emote like its other files. */
+export const shareName = (hash: string): string => `${hash}.share.ogg`;
+export type SoundSaved = { ok: true; share: string | null } | { ok: false; error: SoundError };
 
 export type SaveResult = { ok: true; emote: CustomEmote } | { ok: false; error: ImportError };
 
@@ -53,6 +57,17 @@ export function checkSound(b: Uint8Array): SoundError | null {
 }
 
 /**
+ * The copy of a sound that travels: Ogg Opus by its structure, at most SHARED_SOUND_MAX_BYTES, and no longer than
+ * SHARED_SOUND_MAX_S counted from its packets. A small file can otherwise decode to minutes of audio in memory.
+ */
+export function checkShared(b: Uint8Array): SoundError | null {
+  if (b.length > SHARED_SOUND_MAX_BYTES) return 'size';
+  const info = oggOpusInfo(b);
+  if (!info) return 'type';
+  return info.seconds > SHARED_SOUND_MAX_S ? 'long' : null;
+}
+
+/**
  * What an emote looks like on screen. A room member's imported emote shows as its still when it is one of ours too, or,
  * through `cacheHas`, when its still arrived over the room. Anything else is the placeholder.
  */
@@ -71,8 +86,8 @@ export function resolveEmoteArt(ref: EmoteRef, custom: readonly CustomEmote[], r
 }
 
 /**
- * Imported emotes on disk: `<hash>.webp` (the still), `<hash>.anim.gif|webp` (the original animation) and
- * `<hash>.sound.ogg|mp3|wav` in `dir`.
+ * Imported emotes on disk: `<hash>.webp` (the still), `<hash>.anim.gif|webp` (the original animation),
+ * `<hash>.sound.ogg|mp3|wav` and `<hash>.share.ogg` (the sound's small copy for rooms) in `dir`.
  * Everything that arrives is checked again here, whatever the settings window already checked, and the id is computed here.
  */
 export class EmoteLibrary {
@@ -104,24 +119,56 @@ export class EmoteLibrary {
     return { ok: true, emote: { id, name, animated: f.anim !== undefined } };
   }
 
-  /** Saves `sound` as the emote's sound, replacing any it had, or deletes its sound when `sound` is null. */
-  async setSound(id: EmoteRef, sound: Uint8Array | null): Promise<SoundError | null> {
-    if (!isCustomRef(id)) return 'type';
+  /**
+   * Saves `sound` as the emote's sound, replacing any it had, or deletes its sound when `sound` is null. `share` is the
+   * small copy for rooms, as the settings window encoded it: kept only when it passes its own checks, and its hash is
+   * handed back. A sound without one still plays here; friends just don't hear it.
+   */
+  async setSound(id: EmoteRef, sound: Uint8Array | null, share: Uint8Array | null = null): Promise<SoundSaved> {
+    if (!isCustomRef(id)) return { ok: false, error: 'type' };
     const hash = customHash(id);
-    const all = soundNames(hash);
+    const all = [...soundNames(hash), shareName(hash)];
     try {
       if (sound === null) {
         for (const n of all) await rm(join(this.dir, n), { force: true });
-        return null;
+        return { ok: true, share: null };
       }
       const error = checkSound(sound);
-      if (error) return error;
-      const name = `${hash}.sound.${sniffAudio(sound)}`;
-      await this.write([{ name, data: sound }], all.filter((n) => n !== name)); // a sound in another format would be served first
-      return null;
+      if (error) return { ok: false, error };
+      const files = [{ name: `${hash}.sound.${sniffAudio(sound)}`, data: sound }];
+      const shared = share !== null && checkShared(share) === null ? share : null;
+      if (shared) files.push({ name: shareName(hash), data: shared });
+      // A sound in another format would be served first, and an old copy would go on being shared.
+      await this.write(files, all.filter((n) => !files.some((f) => f.name === n)));
+      return { ok: true, share: shared ? createHash('sha256').update(shared).digest('hex').slice(0, 32) : null };
     } catch (err) {
       console.warn('[emotes] could not save a sound:', (err as Error).message);
-      return 'disk';
+      return { ok: false, error: 'disk' };
+    }
+  }
+
+  /** The emote's stored sound, or null when it has none. */
+  async readSound(id: EmoteRef): Promise<Uint8Array | null> {
+    if (!isCustomRef(id)) return null;
+    for (const name of soundNames(customHash(id))) {
+      try {
+        return new Uint8Array(await readFile(join(this.dir, name)));
+      } catch {
+        // not this format
+      }
+    }
+    return null;
+  }
+
+  /** Keeps `share` as the copy for rooms of a sound that is already stored, and hands back its hash; null when it fails its checks or the disk refuses. */
+  async setShare(id: EmoteRef, share: Uint8Array): Promise<string | null> {
+    if (!isCustomRef(id) || checkShared(share) !== null) return null;
+    try {
+      await this.write([{ name: shareName(customHash(id)), data: share }], []);
+      return createHash('sha256').update(share).digest('hex').slice(0, 32);
+    } catch (err) {
+      console.warn('[emotes] could not save a shared sound:', (err as Error).message);
+      return null;
     }
   }
 
@@ -129,7 +176,7 @@ export class EmoteLibrary {
   async remove(id: EmoteRef): Promise<void> {
     if (!isCustomRef(id)) return;
     const hash = customHash(id);
-    await Promise.all([`${hash}.webp`, `${hash}.anim.gif`, `${hash}.anim.webp`, ...soundNames(hash)].map((n) =>
+    await Promise.all([`${hash}.webp`, `${hash}.anim.gif`, `${hash}.anim.webp`, ...soundNames(hash), shareName(hash)].map((n) =>
       rm(join(this.dir, n), { force: true }).catch((err: Error) => console.warn('[emotes] could not delete', n, err.message))));
   }
 

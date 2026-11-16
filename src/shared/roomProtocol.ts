@@ -34,9 +34,16 @@ export interface PresenceMsg extends Base {
   color: number;
   /** A custom tag colour, three 0–255 channels. Optional: a peer on an older build sends none, and ignores ours. */
   rgb?: TagRgb;
+  /**
+   * Added after 0.6.0: how much of what the room announces this member has: [files here, files announced to it], stills
+   * and shared sounds of everyone else's wheels. Left out by older apps, and by one that fetches nothing.
+   */
+  sy?: [number, number];
   status: MemberStatus;
   /** Added in 0.5.2: the 32-hex hashes of the custom emotes on our wheel and centre, at most 9. Older apps leave it out. */
   em: string[];
+  /** Added after 0.6.0: for each hash in `em`, the hash of that emote's shared sound, or '' for none. Older apps leave it out. */
+  sn: string[];
   /** Added in 0.5.2: the room features this peer has switched off. Older apps leave it out, which reads as none. */
   nf: RoomFeatureOff[];
   /** Added in 0.5.2: the Ed25519 public key, raw, in base64. The peer id is its hash, and every message but a chunk is signed with it. */
@@ -93,16 +100,29 @@ export interface BallotMsg extends Base {
   id: string;
   yes: boolean;
 }
-/** Added in 0.5.2: asks the peer named `to` for the still of custom emote `h`. `need` lists chunk indexes, [] = all of them. */
+/** Added in 0.5.2: asks the peer named `to` for the still `h`, or for the shared sound `h`. `need` lists chunk indexes, [] = all of them. */
 export interface WantMsg extends Base {
   t: 'want';
   to: string;
   h: string;
   need: number[];
+  /** Added after 0.6.0: the asker reads `blob` messages, so over a relay the whole of `h` may come in those. Older apps ignore it and answer in chunks. */
+  big?: true;
 }
-/** Added in 0.5.2: one slice `i` of `n` of the still `h`, base64 in `b`. A chunk's sealed packet stays under MAX_PACKET. */
+/** Added in 0.5.2: one slice `i` of `n` of the still or shared sound `h`, base64 in `b`. A chunk's sealed packet stays under MAX_PACKET. */
 export interface ChunkMsg extends Base {
   t: 'chunk';
+  h: string;
+  i: number;
+  n: number;
+  b: string;
+}
+/**
+ * Added after 0.6.0: one part `i` of `n` of the still or shared sound `h`, like a chunk but up to 6,000 bytes. Only relays
+ * carry it (it fits no LAN packet), and an older app never sees it: its relay transport drops content this long.
+ */
+export interface BlobMsg extends Base {
+  t: 'blob';
   h: string;
   i: number;
   n: number;
@@ -111,7 +131,7 @@ export interface ChunkMsg extends Base {
 export interface ByeMsg extends Base {
   t: 'bye';
 }
-export type RoomMessage = PresenceMsg | PingMsg | EmoteMsg | TextMsg | AliveMsg | VoteMsg | BallotMsg | WantMsg | ChunkMsg | ByeMsg;
+export type RoomMessage = PresenceMsg | PingMsg | EmoteMsg | TextMsg | AliveMsg | VoteMsg | BallotMsg | WantMsg | ChunkMsg | BlobMsg | ByeMsg;
 
 // C0/C1 controls, zero-width characters, bidi marks, embeddings and isolates, BOM, line/paragraph separators,
 // soft hyphen, combining grapheme joiner, Arabic letter mark, Mongolian vowel separator and the Hangul fillers
@@ -146,8 +166,16 @@ const isUnit = (v: unknown): v is number => typeof v === 'number' && v >= 0 && v
 /** Chunk `b` is at most this many base64 characters (750 bytes); 17 chunks carry a full 12 KB still. */
 export const EMOTE_CHUNK_B64_MAX = 1000;
 export const EMOTE_CHUNKS_MAX = 17;
-/** Chunk indexes in a `want`'s `need`: at most this many entries, each below EMOTE_CHUNKS_MAX. */
+/** 22 chunks carry a full 16 KB shared sound. An app before sounds travelled drops a chunk numbered past a still's 17. */
+export const SOUND_CHUNKS_MAX = 22;
+const CHUNKS_MAX = Math.max(EMOTE_CHUNKS_MAX, SOUND_CHUNKS_MAX);
+/** Chunk indexes in a `want`'s `need`: at most this many entries, each below the largest chunk count. */
 export const EMOTE_NEED_MAX = 64;
+/** The most files a presence's `sy` may count. */
+export const SYNC_FILES_MAX = 999;
+/** Blob `b` is at most this many base64 characters (6,000 bytes); 3 parts carry a full 16 KB shared sound. */
+export const BLOB_B64_MAX = 8000;
+export const BLOB_PARTS_MAX = 3;
 const B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 /** 32 raw bytes in base64. */
 const PK_RE = /^[A-Za-z0-9+/]{43}=$/;
@@ -166,6 +194,15 @@ function emList(raw: unknown): string[] {
   return out;
 }
 
+/**
+ * The shared sound of each announced hash, rebuilt: a hash or ''. Positions only mean something when `em` arrived exactly
+ * as it was rebuilt and `sn` is as long, so anything else means no sounds.
+ */
+function snList(raw: unknown, emRaw: unknown, em: readonly string[]): string[] {
+  if (!Array.isArray(raw) || !Array.isArray(emRaw) || emRaw.length !== em.length || raw.length !== em.length) return em.map(() => '');
+  return raw.map((v) => (typeof v === 'string' && HASH_RE.test(v) ? v : ''));
+}
+
 /** The switched-off features, rebuilt: known ones only, once each. Anything else means none. */
 function nfList(raw: unknown): RoomFeatureOff[] {
   if (!Array.isArray(raw)) return [];
@@ -180,14 +217,19 @@ export function validateMessage(raw: unknown): RoomMessage | null {
   const base = { peer, seq, ts };
   switch (t) {
     case 'presence': {
-      const { proto, app, name, color, rgb, status, em, nf, pk } = raw;
+      const { proto, app, name, color, rgb, status, em, sn, sy, nf, pk } = raw;
       if (!isUint(proto) || typeof app !== 'string' || app.length > MAX_APP_VERSION || typeof name !== 'string') return null;
       if (!isTagColor(color) || !STATUSES.includes(status as MemberStatus)) return null;
+      const hashes = emList(em);
       const presence: PresenceMsg = {
         t, ...base, proto, app, name: sanitizeName(name.slice(0, 256)), color, status: status as MemberStatus,
-        em: emList(em), nf: nfList(nf), ...(typeof pk === 'string' && PK_RE.test(pk) ? { pk } : {}),
+        em: hashes, sn: snList(sn, em, hashes), nf: nfList(nf), ...(typeof pk === 'string' && PK_RE.test(pk) ? { pk } : {}),
       };
       // A malformed custom colour is dropped rather than the whole presence: an unreadable tag beats a missing member.
+      // 16 members' full wheels with sounds are 270 files; anything past that, or more here than announced, isn't a count.
+      if (Array.isArray(sy) && sy.length === 2 && isUint(sy[0]) && isUint(sy[1]) && sy[0] <= sy[1] && sy[1] <= SYNC_FILES_MAX) {
+        presence.sy = [sy[0], sy[1]];
+      }
       return isTagRgb(rgb) ? { ...presence, rgb } : presence;
     }
     case 'ping': {
@@ -230,18 +272,25 @@ export function validateMessage(raw: unknown): RoomMessage | null {
       return isVoteId(id) && typeof yes === 'boolean' ? { t, ...base, id, yes } : null;
     }
     case 'want': {
-      const { to, h, need } = raw;
+      const { to, h, need, big } = raw;
       if (typeof to !== 'string' || !/^[0-9a-f]{16}$/.test(to) || typeof h !== 'string' || !HASH_RE.test(h)) return null;
       if (!Array.isArray(need) || need.length > EMOTE_NEED_MAX) return null;
-      if (!need.every((v) => isUint(v) && (v as number) < EMOTE_CHUNKS_MAX)) return null;
-      return { t, ...base, to, h, need: [...new Set(need)] };
+      if (!need.every((v) => isUint(v) && (v as number) < CHUNKS_MAX)) return null;
+      return { t, ...base, to, h, need: [...new Set(need)], ...(big === true ? { big } : {}) };
     }
     case 'chunk': {
       const { h, i, n, b } = raw;
       if (typeof h !== 'string' || !HASH_RE.test(h)) return null;
-      if (!isUint(n) || (n as number) < 1 || (n as number) > EMOTE_CHUNKS_MAX) return null;
+      if (!isUint(n) || (n as number) < 1 || (n as number) > CHUNKS_MAX) return null;
       if (!isUint(i) || (i as number) >= (n as number)) return null;
       if (typeof b !== 'string' || b.length > EMOTE_CHUNK_B64_MAX || b.length % 4 !== 0 || !B64_RE.test(b)) return null;
+      return { t, ...base, h, i: i as number, n: n as number, b };
+    }
+    case 'blob': {
+      const { h, i, n, b } = raw;
+      if (typeof h !== 'string' || !HASH_RE.test(h)) return null;
+      if (!isUint(n) || (n as number) < 1 || (n as number) > BLOB_PARTS_MAX || !isUint(i) || (i as number) >= (n as number)) return null;
+      if (typeof b !== 'string' || b.length > BLOB_B64_MAX || b.length % 4 !== 0 || !B64_RE.test(b)) return null;
       return { t, ...base, h, i: i as number, n: n as number, b };
     }
     case 'bye':

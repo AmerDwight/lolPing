@@ -8,9 +8,11 @@ export const CACHE_MAX_FILES = 200;
 export const CACHE_MAX_BYTES = 4 * 1024 * 1024;
 /** A crashed put leaves a `.tmp` behind; a live one owns its file for milliseconds, so only tmp this old is swept. */
 const STALE_TMP_MS = 5 * 60_000;
-const NAME_RE = /^([0-9a-f]{32})\.webp$/;
 
-/** Owns `<settings folder>/emote-cache/`: verified stills that arrived over a room, capped, evicted by last use. */
+/**
+ * Owns the files of one type in `<settings folder>/emote-cache/`: verified stills (`.webp`) or shared sounds (`.ogg`) that
+ * arrived over a room, capped, evicted by last use. Each type has its own cache and caps over the same folder.
+ */
 export class EmoteCache {
   readonly dir: string;
   /**
@@ -21,8 +23,11 @@ export class EmoteCache {
   /** Set after the first write failure, so the log says so once: received stills stay unavailable (the placeholder). */
   private broken = false;
 
-  constructor(dir: string, private readonly now: () => number) {
+  private readonly nameRe: RegExp;
+
+  constructor(dir: string, private readonly now: () => number, private readonly ext: 'webp' | 'ogg' = 'webp') {
     this.dir = dir;
+    this.nameRe = new RegExp(`^([0-9a-f]{32})\\.${ext}$`);
   }
 
   /** Reads what earlier sessions left behind. Run once at launch, before anything asks has(). */
@@ -40,14 +45,14 @@ export class EmoteCache {
     if (e) this.use(hash, e.size);
   }
 
-  /** Stores a still that has already been verified against its hash and image header. False when the disk refused. */
+  /** Stores a file that has already been verified against its hash and its type's checks. False when the disk refused. */
   async put(hash: string, bytes: Uint8Array): Promise<boolean> {
     if (!isCustomRef(`c:${hash}`)) return false;
-    const tmp = join(this.dir, `${hash}.webp.tmp`);
+    const tmp = join(this.dir, `${hash}.${this.ext}.tmp`);
     try {
       await mkdir(this.dir, { recursive: true });
       await writeFile(tmp, bytes);
-      await renameWithRetry(tmp, join(this.dir, `${hash}.webp`));
+      await renameWithRetry(tmp, join(this.dir, `${hash}.${this.ext}`));
       this.use(hash, bytes.length);
       await this.evict();
       return true;
@@ -71,8 +76,8 @@ export class EmoteCache {
     }
     const entries = new Map<string, { size: number; at: number }>();
     for (const name of names) {
-      const m = NAME_RE.exec(name);
-      const tmp = name.endsWith('.tmp');
+      const m = this.nameRe.exec(name);
+      const tmp = name.endsWith(`.${this.ext}.tmp`); // the other type's cache sweeps its own
       if (!m && !tmp) continue;
       try {
         const s = await stat(join(this.dir, name));
@@ -103,7 +108,7 @@ export class EmoteCache {
         continue;
       }
       this.entries.delete(hash); // has() says no at once, before the file is gone
-      await rm(join(this.dir, `${hash}.webp`), { force: true }).catch(() => undefined);
+      await rm(join(this.dir, `${hash}.${this.ext}`), { force: true }).catch(() => undefined);
     }
   }
 }

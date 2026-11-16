@@ -80,7 +80,7 @@
     },
     "portable": {
       "artifactName": "lolPing-${version}-portable.exe",
-      "unpackDirName": "lolPing-portable"
+      "unpackDirName": true
     },
     "mac": {
       "minimumSystemVersion": "13.0",

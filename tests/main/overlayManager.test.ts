@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { parkedBounds } from '../../src/main/overlayManager';
 import type { EmoteArt } from '../../src/shared/emotes';
-import { OVERLAY_EMOTED, OVERLAY_IDLE, OVERLAY_PINGED } from '../../src/shared/ipc';
+import { OVERLAY_EMOTED, OVERLAY_IDLE, OVERLAY_PINGED, OVERLAY_SHARE } from '../../src/shared/ipc';
 import { DEFAULT_SETTINGS, overlaySettings } from '../../src/shared/settings';
 
 type Rect = { x: number; y: number; width: number; height: number };
@@ -47,7 +47,7 @@ vi.mock('electron', async () => {
     }
     x: number;
     bounds: Rect;
-    webContents = Object.assign(new Emitter(), { send: vi.fn() });
+    webContents = Object.assign(new Emitter(), { send: vi.fn(), isLoading: () => false });
     constructor(opts: Rect) {
       super();
       this.x = opts.x;
@@ -467,6 +467,40 @@ describe('OverlayManager remote and preview emotes', () => {
     mgr.spawnRemoteEmote({ displayId: 1, x: 1, y: 1, ref: `c:${'a'.repeat(32)}`, peer: 'peer-1', tag: { name: 'Bob', color: 2 } });
     expect(sent(0)[0][1]).toMatchObject({ art: { kind: 'custom', fx: 5 } }); // the sender's pick, not the cache's plain pop
     expect(sent(0)[1][1]).toMatchObject({ art: { kind: 'custom', fx: 0 } }); // no fx on the message: the sender's plain pop, whatever we stored
+  });
+
+  it('plays the sender’s shared sound with their custom emote, over ours for the same image, and none with a placeholder', () => {
+    const url = `lolping://emotes/${'a'.repeat(32)}.webp`;
+    const theirs = `lolping://emotes/${'b'.repeat(32)}.ogg`;
+    const ref = `c:${'a'.repeat(32)}`;
+    const tag = { name: 'Bob', color: 2 };
+    resolveArt
+      .mockReturnValueOnce({ kind: 'custom', url, animated: false, fx: 0 })
+      .mockReturnValueOnce({ kind: 'custom', url, animated: false, fx: 0 })
+      .mockReturnValueOnce({ kind: 'placeholder' });
+    mgr.spawnRemoteEmote({ displayId: 1, x: 1, y: 1, ref, sound: theirs, peer: 'peer-1', tag });
+    mgr.spawnRemoteEmote({ displayId: 1, x: 1, y: 1, ref, peer: 'peer-1', tag });
+    mgr.spawnRemoteEmote({ displayId: 1, x: 1, y: 1, ref, sound: theirs, peer: 'peer-1', tag });
+    expect(sent(0)[0][1]).toMatchObject({ art: { kind: 'custom', sound: theirs } });
+    expect((sent(0)[1][1] as { art: EmoteArt }).art).not.toHaveProperty('sound'); // their sound hasn't arrived: silent
+    expect((sent(0)[2][1] as { art: EmoteArt }).art).toEqual({ kind: 'placeholder' }); // an image we can't show makes no sound
+  });
+
+  it('hands a sound to the main display’s overlay to encode, and passes its copy on only from an overlay', () => {
+    const sound = Uint8Array.of(1, 2, 3);
+    const ref = `c:${'a'.repeat(32)}`;
+    expect(mgr.encodeShare(ref, sound)).toBe(true);
+    expect(sent(0)).toEqual([['emote:encode', { id: ref, sound }]]);
+    expect(sent(1)).toEqual([]);
+
+    const shares: unknown[] = [];
+    mgr.on('share', (p) => shares.push(p));
+    const report = h.handlers.get(OVERLAY_SHARE)!;
+    report({ sender: h.windows[0].webContents }, { id: ref, share: Uint8Array.of(9) });
+    report({ sender: h.windows[0].webContents }, { id: ref, share: 'not bytes' });
+    report({ sender: {} }, { id: ref, share: Uint8Array.of(9) }); // not one of our overlays
+    report({ sender: h.windows[0].webContents }, { id: '../x', share: Uint8Array.of(9) });
+    expect(shares).toEqual([{ id: ref, share: Uint8Array.of(9) }, { id: ref, share: null }]);
   });
 
   it('previews in the middle of the main display without sharing', () => {

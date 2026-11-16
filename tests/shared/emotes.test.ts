@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CLICK_EMOTE, DEFAULT_EMOTE_WHEEL, EMOTE_CATALOG } from '../../src/shared/emoteCatalog';
 import {
-  allEmoteAssetFiles, announcedEmoteHashes, catalogEmote, customAnimUrl, customHash, customStillUrl, emoteAnimUrl, emoteIconUrl,
+  allEmoteAssetFiles, announcedEmoteHashes, announcedEmoteSounds, catalogEmote, customAnimUrl, customHash, customStillUrl, emoteAnimUrl, emoteIconUrl,
   EMOTE_FX_VARIANTS, emoteName, emoteSoundUrl, isBundledEmote, isCustomRef, isEmoteRefShape, normalizeClickEmote,
   normalizeEmoteWheel, type CustomEmote,
 } from '../../src/shared/emotes';
@@ -171,6 +171,15 @@ describe('announcedEmoteHashes', () => {
   it('announces at most 9 hashes', () => {
     const many = Array.from({ length: 12 }, (_, i) => `c:${i.toString(16).padStart(32, '0')}`);
     expect(announcedEmoteHashes(many.slice(1), many[0])).toHaveLength(9);
+  });
+});
+
+describe('announcedEmoteSounds', () => {
+  it('gives each announced hash its emote’s shared sound, in order, and an empty string where there is none', () => {
+    const shared: CustomEmote = { ...custom(HASH), sound: true, share: 'c'.repeat(32) };
+    const local: CustomEmote = { ...custom(HASH_B), sound: true }; // a sound with no copy for rooms
+    expect(announcedEmoteSounds([HASH_B, HASH, 'd'.repeat(32)], [shared, local])).toEqual(['', 'c'.repeat(32), '']);
+    expect(announcedEmoteSounds([], [shared])).toEqual([]);
   });
 });
 

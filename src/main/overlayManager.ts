@@ -2,7 +2,7 @@ import { BrowserWindow, ipcMain, screen, type Display, type Rectangle, type WebC
 import { EventEmitter } from 'node:events';
 import { isEmoteRefShape, type EmoteArt, type EmoteRef } from '../shared/emotes';
 import {
-  OVERLAY_ASSETS, OVERLAY_EMOTED, OVERLAY_IDLE, OVERLAY_PINGED, type OverlayChannel, type OverlayEvents, type PingTag,
+  OVERLAY_ASSETS, OVERLAY_EMOTED, OVERLAY_IDLE, OVERLAY_PINGED, OVERLAY_SHARE, type OverlayChannel, type OverlayEvents, type PingTag,
 } from '../shared/ipc';
 import { WHEEL, pickSlice } from '../shared/geometry';
 import { isPingId, type PingId } from '../shared/pings';
@@ -136,6 +136,11 @@ export class OverlayManager extends EventEmitter {
       this.emit('sharedEmote', { ref: p.ref, displayId, x: p.x, y: p.y } satisfies SharedEmote);
       // The wheel's own overlay already shows it. Another display may still hold an earlier one of ours.
       this.clearElsewhere(displayId, 'self');
+    });
+    ipcMain.on(OVERLAY_SHARE, (event, raw: unknown) => {
+      const p = raw as { id?: unknown; share?: unknown } | null;
+      if (!p || !isEmoteRefShape(p.id) || this.displayOf(event.sender) === undefined) return;
+      this.emit('share', { id: p.id, share: p.share instanceof Uint8Array ? p.share : null });
     });
     ipcMain.on(OVERLAY_IDLE, (event, idle: unknown) => {
       // Screenshot tools on Windows take a shown overlay for a window over the whole display (#127): park an empty one.
@@ -328,12 +333,15 @@ export class OverlayManager extends EventEmitter {
     this.send(d.id, 'emote:spawn', { owner: 'preview', art: this.resolveArt(ref, false), x: d.bounds.width / 2, y: d.bounds.height / 2 });
   }
 
-  /** A room member's emote, already mapped onto one of our displays. It replaces their earlier one, whichever display that was on. */
-  spawnRemoteEmote(p: { displayId: number; x: number; y: number; ref: EmoteRef; fx?: number; peer: string; tag: PingTag }): void {
+  /**
+   * A room member's emote, already mapped onto one of our displays. It replaces their earlier one, whichever display that
+   * was on. `sound` is the URL of the sender's shared sound for it, when that has arrived.
+   */
+  spawnRemoteEmote(p: { displayId: number; x: number; y: number; ref: EmoteRef; fx?: number; sound?: string; peer: string; tag: PingTag }): void {
     const art = this.resolveArt(p.ref, true);
-    // The effect is the sender's choice, so the one on their message wins — over a cached still's plain pop, and over
-    // the effect we picked if we happen to have the same image imported.
-    const withFx = art.kind === 'custom' ? { ...art, fx: p.fx ?? 0 } : art;
+    // The effect and the sound are the sender's choice, so theirs win — over a cached still's plain pop and silence, and
+    // over what we picked if we happen to have the same image imported. An image we can't show plays no sound either.
+    const withFx = art.kind === 'custom' ? { ...art, fx: p.fx ?? 0, ...(p.sound ? { sound: p.sound } : {}) } : art;
     this.send(p.displayId, 'emote:spawn', { owner: p.peer, art: withFx, x: p.x, y: p.y, tag: p.tag });
     this.clearElsewhere(p.displayId, p.peer);
   }
@@ -347,6 +355,17 @@ export class OverlayManager extends EventEmitter {
   /** This machine's displays with their room numbers (#1 = primary). */
   numbered(): NumberedDisplay[] {
     return this.numberedList;
+  }
+
+  /**
+   * Hands an imported emote's sound to the main display's overlay, which has the audio encoder main lacks. The copy
+   * comes back as a 'share' event ({id, share | null}). False when there is no overlay to take it.
+   */
+  encodeShare(id: EmoteRef, sound: Uint8Array): boolean {
+    const w = this.windows.get(screen.getPrimaryDisplay().id);
+    if (!w || w.isDestroyed() || w.webContents.isLoading()) return false;
+    w.webContents.send('emote:encode', { id, sound });
+    return true;
   }
 
   toast(title: string, body: string): void {

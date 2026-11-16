@@ -75,10 +75,14 @@ describe('RelayTransport', () => {
     expect(packets).toEqual([[`net:${other.pubkey}`, Buffer.from([1, 2, 3])]]);
   });
 
-  it("drops content over 1600 characters or that isn't base64", () => {
+  it("takes content as long as a blob part's packet, and drops longer content or content that isn't base64", () => {
     relay.start(KEYS);
     last().open();
-    last().receive(['EVENT', 'lolping', theirs('A'.repeat(1604))]);
+    last().receive(['EVENT', 'lolping', theirs('A'.repeat(11_200))]);
+    expect(packets).toHaveLength(1);
+    expect(packets[0][1]).toHaveLength(8400);
+    packets.length = 0;
+    last().receive(['EVENT', 'lolping', theirs('A'.repeat(11_204))]);
     last().receive(['EVENT', 'lolping', theirs('!!!!')]);
     last().receive(['EVENT', 'lolping', theirs('AQI')]);
     expect(packets).toEqual([]);

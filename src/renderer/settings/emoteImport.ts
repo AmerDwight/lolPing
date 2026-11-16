@@ -4,9 +4,11 @@ import {
   STILL_SIDE, type EmoteFile, type ImportError, type SoundError,
 } from '../../shared/emotes';
 import { imageSize, sniffImage, type ImageType } from '../../shared/imageSniff';
+import { encodeShared } from '../shared/soundShare';
 
 export type Prepared = { ok: true; file: EmoteFile } | { ok: false; error: ImportError };
-export type PreparedSound = { ok: true; bytes: Uint8Array } | { ok: false; error: SoundError };
+/** `share` is the small copy for room members, or null when it couldn't be made. */
+export type PreparedSound = { ok: true; bytes: Uint8Array; share: Uint8Array | null } | { ok: false; error: SoundError };
 
 const QUALITIES: readonly number[] = [0.85, 0.75, 0.65, 0.55, 0.45];
 const MIME: Record<ImageType, string> = { png: 'image/png', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
@@ -112,7 +114,7 @@ export function checkSound(head: Uint8Array, size: number, seconds: number | nul
   return seconds !== null && seconds > SOUND_MAX_S + 0.05 ? 'long' : null; // a little slack for encoder padding
 }
 
-/** Reads a picked sound file and checks it: OGG, MP3 or WAV, at most SOUND_MAX_BYTES and SOUND_MAX_S seconds. */
+/** Reads a picked sound file, checks it (OGG, MP3 or WAV, at most SOUND_MAX_BYTES and SOUND_MAX_S seconds) and encodes its copy for rooms. */
 export async function prepareSound(file: File): Promise<PreparedSound> {
   const head = new Uint8Array(await file.slice(0, 16).arrayBuffer());
   const early = checkSound(head, file.size, null); // refused without reading the rest of what may be a huge file
@@ -122,7 +124,7 @@ export async function prepareSound(file: File): Promise<PreparedSound> {
   try {
     const decoded = await ctx.decodeAudioData(bytes.slice().buffer); // decoding detaches the buffer it gets: hand it a copy
     const long = checkSound(head, bytes.length, decoded.duration);
-    return long ? { ok: false, error: long } : { ok: true, bytes };
+    return long ? { ok: false, error: long } : { ok: true, bytes, share: await encodeShared(decoded) };
   } catch {
     return { ok: false, error: 'type' }; // looked like a sound, but doesn't decode
   }

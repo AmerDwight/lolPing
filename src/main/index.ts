@@ -11,7 +11,7 @@ import { resolveLang, strings, type Strings } from '../shared/i18n';
 import {
   SETTINGS_CH, type About, type AppStatus, type PanelAction, type PanelState, type TeammateHistoryOp,
 } from '../shared/ipc';
-import { announcedEmoteHashes } from '../shared/emotes';
+import { announcedEmoteHashes, announcedEmoteSounds, customHash, isCustomRef, sharedSoundUrl, type EmoteRef } from '../shared/emotes';
 import { featureOn, liveKeys, roomFeaturesOff } from '../shared/features';
 import { hotkeyLabel } from '../shared/keys';
 import { LOGO_TEXTURE } from '../shared/pings';
@@ -32,7 +32,8 @@ import { updateErrorText, type UpdateState } from '../shared/update';
 import { registerAppScheme, serveAppScheme } from './appProtocol';
 import { resolveTarget, toShared } from './displayNumbers';
 import { EmoteCache } from './emoteCache';
-import { EmoteLibrary, resolveEmoteArt } from './emoteLibrary';
+import { EmoteLibrary, resolveEmoteArt, shareName } from './emoteLibrary';
+import { ShareBackfill } from './shareBackfill';
 import { EmoteTransfer } from './emoteTransfer';
 import { isFile } from './fileState';
 import { InputBridge } from './inputBridge';
@@ -215,6 +216,9 @@ function start(): void {
   const library = new EmoteLibrary(join(settingsDir(), 'emotes'));
   const cache = new EmoteCache(join(settingsDir(), 'emote-cache'), Date.now);
   void cache.present();
+  // Friends' shared emote sounds, in the same folder under their own cap.
+  const soundCache = new EmoteCache(cache.dir, Date.now, 'ogg');
+  void soundCache.present();
   serveAppScheme({
     rendererRoot: process.env.ELECTRON_RENDERER_URL ? null : join(__dirname, '../renderer'), // development pages come from Vite
     emoteDirs: () => [library.dir, cache.dir], // the library wins; the cache only fills the gaps
@@ -289,6 +293,10 @@ function start(): void {
     });
   }
 
+  /** The shared sound of each emote `s` announces, in the announcement's order; '' for an emote without one. */
+  const soundsOf = (s: Settings): string[] => announcedEmoteSounds(announcedEmoteHashes(s.emoteWheel, s.clickEmoteId), s.customEmotes);
+  const ourSounds = (): string[] => soundsOf(settings);
+
   // Room: pings shared with other lolPing users, on the network and through public relays.
   const lan = new LanTransport();
   const relay = new RelayTransport({ urls: relayUrls() });
@@ -308,29 +316,60 @@ function start(): void {
     },
     // With emotes switched off we announce none, so friends don't send stills for emotes we won't use.
     announceEmotes: () => (featureOn(settings, 'emotes') ? announcedEmoteHashes(settings.emoteWheel, settings.clickEmoteId) : []),
+    announceSounds: () => (featureOn(settings, 'emotes') ? ourSounds() : []),
+    syncProgress: () => transfer.progress(),
   });
-  // Custom emote stills travel both ways: this side asks for friends' hashes and answers wants for our own.
-  const transfer = new EmoteTransfer({
+  // Custom emote stills and their shared sounds travel both ways: this side asks for friends' hashes and answers wants for our own.
+  const transfer: EmoteTransfer = new EmoteTransfer({
     now: Date.now,
     enabled: () => settings.friendEmotes && featureOn(settings, 'emotes'),
-    have: (hash) => isFile(join(library.dir, `${hash}.webp`), false) || cache.has(hash),
-    still: (hash) => {
+    have: (hash, kind) => (kind === 'still' ? isFile(join(library.dir, `${hash}.webp`), false) || cache.has(hash) : soundCache.has(hash)),
+    blob: (hash, kind) => {
+      // A shared sound is stored under its emote's name, so the emote that announces this hash says which file it is.
+      const sharer = settings.customEmotes.find((c) => c.share === hash);
+      const owner = kind === 'still' ? hash : sharer ? customHash(sharer.id) : null;
+      if (!owner) return null;
       try {
-        return new Uint8Array(readFileSync(join(library.dir, `${hash}.webp`)));
+        return new Uint8Array(readFileSync(join(library.dir, kind === 'still' ? `${owner}.webp` : shareName(owner))));
       } catch {
         return null;
       }
     },
     announced: () => announcedEmoteHashes(settings.emoteWheel, settings.clickEmoteId),
-    put: (hash, bytes) => void cache.put(hash, bytes),
+    announcedSounds: () => ourSounds().filter((h) => h !== ''),
+    put: (hash, bytes, kind) => void (kind === 'still' ? cache : soundCache).put(hash, bytes),
     routeOf: (peer) => room.routeKind(peer),
     sendToLan: (peer, body) => room.sendToLan(peer, body),
     broadcastShared: (body) => room.broadcastShared(body),
     spareSharedToken: (keep) => room.spareSharedToken(keep),
   });
-  room.on('emotes', (peer: string, hashes: string[]) => transfer.announced(peer, hashes));
-  room.on('want', (w: Parameters<EmoteTransfer['onWant']>[0]) => transfer.onWant(w));
+  room.on('emotes', (peer: string, hashes: string[], sounds: string[]) => transfer.announced(peer, hashes, sounds));
+  // A sound with no copy for rooms (added before sounds travelled) gets one from the overlay, which has the encoder.
+  const backfill = new ShareBackfill({
+    now: Date.now,
+    emotes: () => settings.customEmotes,
+    readSound: (id) => library.readSound(id),
+    encode: (id, sound) => overlays.encodeShare(id, sound),
+    save: async (id, share) => {
+      const hash = await library.setShare(id, share);
+      if (hash) store.update({ customEmotes: store.get().customEmotes.map((c) => (c.id === id && c.sound ? { ...c, share: hash } : c)) });
+      pushRoom(); // one sound fewer without a copy
+    },
+  });
+  overlays.on('share', (p: { id: EmoteRef; share: Uint8Array | null }) => void backfill.onResult(p.id, p.share).catch(() => undefined));
+  const backfillTimer = setInterval(() => void backfill.run().catch(() => undefined), 5000);
+  backfillTimer.unref();
+  /** The tray's Sync now: ask for everything missing again, have the room check what it has of ours, and say where things stand. */
+  function syncNow(): void {
+    transfer.resync();
+    room.profileChanged(); // a presence now: the others look again at what we announce
+    void backfill.retry().catch(() => undefined);
+    const p = transfer.progress();
+    overlays.toast(text().syncToastTitle, p ? text().syncToastBody(p.have, p.total) : text().syncToastOff);
+  }
+  room.on('want', (w: Parameters<EmoteTransfer['onWant']>[0], via: 'lan' | 'shared') => transfer.onWant(w, via));
   room.on('chunk', (c: Parameters<EmoteTransfer['onChunk']>[0]) => transfer.onChunk(c));
+  room.on('blob', (c: Parameters<EmoteTransfer['onBlob']>[0]) => transfer.onBlob(c));
   room.on('memberGone', (peer: string) => transfer.memberGone(peer));
   const roomState = (): RoomState => {
     const all = screen.getAllDisplays();
@@ -402,6 +441,7 @@ function start(): void {
         create: () => void room.create(),
         copyCode: copyRoomCode,
         setMuted: (on) => store.update({ roomMuted: on }),
+        syncNow,
         leave: () => room.leave(),
         openSettings: () => openSettingsWindow('room'),
       },
@@ -435,10 +475,23 @@ function start(): void {
     });
     tray.setUpdate(trayUpdateFrom(updater.state));
   }
+  let syncDone = false;
   function pushRoom(): void {
     if (quitting) return;
     const s = roomState();
-    tray.setRoom({ code: s.code, count: s.members.length, muted: settings.roomMuted });
+    const me = s.members.find((m) => m.self);
+    tray.setRoom({
+      code: s.code, count: s.members.length, muted: settings.roomMuted,
+      sync: {
+        mine: me?.sync ?? null,
+        members: s.members.filter((m) => !m.self).map((m) => ({ name: m.name, path: m.path, got: transfer.progressOf(m.peer), sync: m.sync })),
+        unshared: backfill.missing(),
+      },
+    });
+    // The moment everything has arrived, say so, instead of leaving the others on an old count until the next presence.
+    const done = !!me?.sync && me.sync.total > 0 && me.sync.have >= me.sync.total;
+    if (done && !syncDone) room.profileChanged();
+    syncDone = done;
     settingsWindow()?.webContents.send(SETTINGS_CH.roomChanged, s);
   }
   const syncRoomFlags = (): void => room.setStatusFlags({ paused: !enabled, roomMuted: settings.roomMuted });
@@ -464,7 +517,13 @@ function start(): void {
     if (shared) room.sendPing(p.id, shared);
   });
   room.on('remoteEmote', (p) => {
-    if (featureOn(settings, 'emotes')) overlays.spawnRemoteEmote(p);
+    if (!featureOn(settings, 'emotes')) return;
+    // The sender's shared sound plays once it has arrived; until then their emote is silent.
+    const heard = settings.friendEmotes && isCustomRef(p.ref) ? transfer.soundFor(p.peer, customHash(p.ref)) : null;
+    if (heard && soundCache.has(heard)) {
+      soundCache.touch(heard); // a played sound is the most recently used at the next cache sweep
+      overlays.spawnRemoteEmote({ ...p, sound: sharedSoundUrl(heard) });
+    } else overlays.spawnRemoteEmote(p);
   });
   overlays.on('sharedEmote', (p: SharedEmote) => {
     const shared = toShared(overlays.numbered(), p.displayId, p.x, p.y);
@@ -1102,6 +1161,8 @@ function start(): void {
       || !sameTagRgb(s.tagColorCustom, previous.tagColorCustom)
       || featureOn(s, 'roomText') !== featureOn(previous, 'roomText')
       || featureOn(s, 'roomVotes') !== featureOn(previous, 'roomVotes')
+      // A sound given to an emote on the wheel, or replaced: friends fetch the new copy now, before the emote is next used.
+      || soundsOf(s).join() !== soundsOf(previous).join()
     ) room.profileChanged();
     if (featureOn(s, 'rooms') !== featureOn(previous, 'rooms')) {
       if (!featureOn(s, 'rooms')) room.leave();

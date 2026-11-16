@@ -19,6 +19,9 @@ const api: OverlayApi = {
   reportEmote() {
     // nor emotes
   },
+  reportShare() {
+    // the site has no library to keep a copy in
+  },
   reportIdle() {
     // the page is the overlay, so there is no window to hide
   },

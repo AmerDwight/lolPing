@@ -24,6 +24,11 @@ export interface RoomMember {
   votesOff: boolean;
   /** Muted by us, for this session. */
   muted: boolean;
+  /**
+   * How many of the stills and shared sounds announced to this member it has. Null when it doesn't say: an app before
+   * sounds travelled, or one that shows no friends' emotes. For us it is our own count.
+   */
+  sync: { have: number; total: number } | null;
   self: boolean;
 }
 
@@ -50,3 +55,8 @@ export interface RoomState extends RoomStateCore {
 }
 
 export type JoinResult = { ok: true } | { ok: false; error: 'invalid' | 'mistyped' | 'failed' };
+
+/** A sync count as a whole percentage, rounded down so 100 only ever means everything. Nothing to fetch is 100. */
+export function syncPercent(p: { have: number; total: number }): number {
+  return p.total <= 0 ? 100 : Math.min(100, Math.floor((p.have / p.total) * 100));
+}

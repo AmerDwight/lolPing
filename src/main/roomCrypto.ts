@@ -5,6 +5,8 @@ import {
 
 /** Every room packet: format byte, nonce, AES-256-GCM ciphertext and tag. Larger packets are never sent or read. */
 export const MAX_PACKET = 1200;
+/** A packet that only relays carry (a `blob` part of a still or shared sound): no datagram to fit, so it may be this long. */
+export const MAX_SHARED_PACKET = 8400;
 const FORMAT = 0x01;
 const NONCE = 12;
 const TAG = 16;
@@ -30,8 +32,8 @@ export function deriveRoomKeys(canonical: string): Promise<RoomKeys> {
   });
 }
 
-export function seal(key: Buffer, plain: Uint8Array): Buffer {
-  if (plain.length + OVERHEAD > MAX_PACKET) throw new Error('room message too large');
+export function seal(key: Buffer, plain: Uint8Array, max = MAX_PACKET): Buffer {
+  if (plain.length + OVERHEAD > max) throw new Error('room message too large');
   const nonce = randomBytes(NONCE);
   const cipher = createCipheriv('aes-256-gcm', key, nonce);
   cipher.setAAD(AAD);
@@ -40,8 +42,8 @@ export function seal(key: Buffer, plain: Uint8Array): Buffer {
 }
 
 /** The plaintext, or null for anything that isn't a packet sealed with this key. */
-export function open(key: Buffer, packet: Uint8Array): Buffer | null {
-  if (packet.length < OVERHEAD || packet.length > MAX_PACKET || packet[0] !== FORMAT) return null;
+export function open(key: Buffer, packet: Uint8Array, max = MAX_PACKET): Buffer | null {
+  if (packet.length < OVERHEAD || packet.length > max || packet[0] !== FORMAT) return null;
   const buf = Buffer.from(packet.buffer, packet.byteOffset, packet.length);
   try {
     const decipher = createDecipheriv('aes-256-gcm', key, buf.subarray(1, 1 + NONCE));

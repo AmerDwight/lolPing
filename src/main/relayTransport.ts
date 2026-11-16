@@ -3,7 +3,7 @@ import { makeKeyPair, ROOM_EVENT_KIND, signEvent, type KeyPair, type NostrEvent 
 import type { SocketFactory } from './relayConnection';
 import { RelayPool } from './relayPool';
 import { RELAYS } from './relays';
-import type { RoomKeys } from './roomCrypto';
+import { MAX_SHARED_PACKET, type RoomKeys } from './roomCrypto';
 import type { PeerKey, Transport, TransportStatus } from './transport';
 
 export interface RelayTransportOptions {
@@ -12,8 +12,8 @@ export interface RelayTransportOptions {
   random?: () => number;
 }
 
-/** A sealed packet (≤ 1200 bytes) in base64. */
-const MAX_CONTENT = 1600;
+/** A sealed packet in base64: at most MAX_SHARED_PACKET bytes. An app before blob parts drops anything over 1,600 characters. */
+const MAX_CONTENT = Math.ceil(MAX_SHARED_PACKET / 3) * 4;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 /** Longest a stop waits for the relays to take the bye RoomManager sent just before. */
 const DRAIN_MS = 500;
