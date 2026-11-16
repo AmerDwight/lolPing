@@ -200,12 +200,12 @@ time.sleep(0.5)
 
 app_log = os.path.join(args.out, 'app.log')
 env = dict(os.environ)
-cmd = [args.app]
+cmd = [args.app, '--hidden']
 if args.kind == 'tauri':
     env['LOLPING_POC_CDP_PORT'] = str(args.port)
     env['LOLPING_POC_LOG'] = app_log
 else:
-    cmd += [f'--remote-debugging-port={args.port}', '--hidden']
+    cmd += [f'--remote-debugging-port={args.port}']
 t_launch = time.time()
 app = subprocess.Popen(cmd, env=env, stdout=open(os.path.join(args.out, 'stdout.txt'), 'w'), stderr=subprocess.STDOUT)
 proc = psutil.Process(app.pid)

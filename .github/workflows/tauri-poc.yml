@@ -1,7 +1,7 @@
 name: Tauri PoC
 
 # The Tauri proof of concept on a Windows desktop: builds its portable exe and runs tauri-poc/e2e/e2e_win.py on it,
-# and the same test on the Electron app as the control.
+# and the same test on the Electron app as the control. Then both portable builds join one room (e2e_room.py).
 on:
   push:
     branches: [poc/tauri-portable]
@@ -18,7 +18,11 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            tauri-poc/package-lock.json
       - run: npm ci
+      - run: npm ci --prefix tauri-poc
       - run: npx tsc -p tauri-poc --noEmit
       - run: npx vitest run tests/tauri-poc
       - run: npm run build:helper
@@ -84,3 +88,32 @@ jobs:
         with:
           name: e2e-electron
           path: e2e-electron
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lolPing-electron-portable
+          path: release/lolPing-*-portable.exe
+          if-no-files-found: error
+
+  interop:
+    needs: [tauri, electron]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: lolPing-tauri-poc-portable
+          path: interop/tauri
+      - uses: actions/download-artifact@v4
+        with:
+          name: lolPing-electron-portable
+          path: interop/electron
+      - run: pip install websocket-client pillow psutil
+      - shell: bash
+        run: python tauri-poc/e2e/e2e_room.py --tauri interop/tauri/lolping-tauri-poc.exe --electron "$(ls interop/electron/lolPing-*-portable.exe)" --out e2e-room
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-room
+          path: e2e-room
