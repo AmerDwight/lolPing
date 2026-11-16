@@ -1,0 +1,84 @@
+name: Tauri PoC
+
+# The Tauri proof of concept on a Windows desktop: builds its portable exe and runs tauri-poc/e2e/e2e_win.py on it,
+# and the same test on the Electron app as the control.
+on:
+  push:
+    branches: [poc/tauri-portable]
+  workflow_dispatch:
+
+jobs:
+  tauri:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx tsc -p tauri-poc --noEmit
+      - run: npx vitest run tests/tauri-poc
+      - run: npm run build:helper
+      - run: npx electron-vite build
+      - run: node tauri-poc/build-web.mjs
+      - uses: actions/cache/restore@v4
+        id: cargo-cache
+        with:
+          path: |
+            ~/.cargo/registry
+            tauri-poc/src-tauri/target
+          key: tauri-poc-cargo-${{ hashFiles('tauri-poc/src-tauri/Cargo.lock') }}
+      - run: cargo build --release --locked
+        working-directory: tauri-poc/src-tauri
+      - uses: actions/cache/save@v4
+        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            ~/.cargo/registry
+            tauri-poc/src-tauri/target
+          key: tauri-poc-cargo-${{ hashFiles('tauri-poc/src-tauri/Cargo.lock') }}
+      - name: Portable size
+        shell: bash
+        run: |
+          exe=tauri-poc/src-tauri/target/release/lolping-tauri-poc.exe
+          echo "Tauri portable exe: $(stat -c %s "$exe") bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: pip install websocket-client pillow psutil
+      - run: python tauri-poc/e2e/e2e_win.py --kind tauri --app tauri-poc/src-tauri/target/release/lolping-tauri-poc.exe --assets assets --out e2e-tauri
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-tauri
+          path: e2e-tauri
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lolPing-tauri-poc-portable
+          path: tauri-poc/src-tauri/target/release/lolping-tauri-poc.exe
+          if-no-files-found: error
+
+  electron:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build:helper
+      - run: npx electron-vite build
+      - run: npx electron-builder --win portable --publish never
+      - name: Portable size
+        shell: bash
+        run: echo "Electron portable exe: $(stat -c %s release/lolPing-*-portable.exe) bytes" | tee -a "$GITHUB_STEP_SUMMARY"
+      - run: pip install websocket-client pillow psutil
+      - run: python tauri-poc/e2e/e2e_win.py --kind electron --app release/win-unpacked/lolPing.exe --assets assets --out e2e-electron
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: e2e-electron
+          path: e2e-electron
