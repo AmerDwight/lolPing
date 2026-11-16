@@ -242,6 +242,15 @@ describe('presence announcements (em)', () => {
     expect(decodeMessage(encodeMessage(m))).toEqual(m);
   });
 
+  it('round-trips a member’s sync count, and drops one that isn’t a count', () => {
+    const m: PresenceMsg = { ...presence, sy: [12, 18] };
+    expect(decodeMessage(encodeMessage(m))).toEqual(m);
+    for (const sy of [[19, 18], [1, 1000], [1], [1, 2, 3], [-1, 2], [0.5, 2], ['1', '2'], '1/2', null]) {
+      expect(validateMessage({ ...presence, sy })).toEqual(presence);
+    }
+    expect(validateMessage({ ...presence, sy: [0, 0] })).toMatchObject({ sy: [0, 0] });
+  });
+
   it('reads a presence without sn as sharing no sounds (an app before sounds travelled)', () => {
     expect(validateMessage({ ...presence, em: [hash, hash2], sn: undefined })).toMatchObject({ em: [hash, hash2], sn: ['', ''] });
   });
@@ -518,7 +527,7 @@ describe('message signatures', () => {
     const worst: PresenceMsg = {
       ...base, seq: Number.MAX_SAFE_INTEGER, t: 'presence', proto: 1, app: '9'.repeat(64), name: '😀'.repeat(16), color: 7,
       rgb: [255, 255, 255], status: 'paused', em: Array.from({ length: 9 }, (_, i) => String(i).repeat(32)),
-      sn: Array.from({ length: 9 }, (_, i) => String(i).repeat(32)), nf: ['text', 'votes'], pk: `${'B'.repeat(43)}=`,
+      sn: Array.from({ length: 9 }, (_, i) => String(i).repeat(32)), sy: [999, 999], nf: ['text', 'votes'], pk: `${'B'.repeat(43)}=`,
     };
     const sealed = seal(Buffer.alloc(32), bytes(joinSigned(enc(worst), SIG)));
     expect(sealed.length).toBeLessThanOrEqual(MAX_PACKET);

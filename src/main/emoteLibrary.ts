@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AUDIO_TYPES, sniffAudio } from '../shared/audioSniff';
 import {
@@ -144,6 +144,31 @@ export class EmoteLibrary {
     } catch (err) {
       console.warn('[emotes] could not save a sound:', (err as Error).message);
       return { ok: false, error: 'disk' };
+    }
+  }
+
+  /** The emote's stored sound, or null when it has none. */
+  async readSound(id: EmoteRef): Promise<Uint8Array | null> {
+    if (!isCustomRef(id)) return null;
+    for (const name of soundNames(customHash(id))) {
+      try {
+        return new Uint8Array(await readFile(join(this.dir, name)));
+      } catch {
+        // not this format
+      }
+    }
+    return null;
+  }
+
+  /** Keeps `share` as the copy for rooms of a sound that is already stored, and hands back its hash; null when it fails its checks or the disk refuses. */
+  async setShare(id: EmoteRef, share: Uint8Array): Promise<string | null> {
+    if (!isCustomRef(id) || checkShared(share) !== null) return null;
+    try {
+      await this.write([{ name: shareName(customHash(id)), data: share }], []);
+      return createHash('sha256').update(share).digest('hex').slice(0, 32);
+    } catch (err) {
+      console.warn('[emotes] could not save a shared sound:', (err as Error).message);
+      return null;
     }
   }
 

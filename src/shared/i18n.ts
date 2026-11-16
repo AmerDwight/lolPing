@@ -755,6 +755,19 @@ const en = {
   trayRoomCreate: 'Create room',
   trayRoomSettings: 'Room settings…',
   trayRoomLabel: (code: string, n: number) => `${code} · ${n} ${n === 1 ? 'person' : 'people'}`,
+  traySync: (have: number, total: number, percent: number) =>
+    (total === 0 ? 'Sync: nothing to fetch' : have >= total ? `Sync: done (${total} of ${total})` : `Sync: ${percent}% (${have} of ${total})`),
+  traySyncOff: 'Sync: off (friends’ custom emotes are hidden)',
+  traySyncMember: (name: string, have: number, total: number, percent: number) =>
+    (total === 0 ? `${name}: nothing to fetch` : `${name}: ${percent}% (${have} of ${total})`),
+  traySyncMemberUnknown: (name: string) => `${name}: no report (an older version, or sync off)`,
+  traySyncUnshared: (n: number) => `${n} of your sounds ${n === 1 ? 'has' : 'have'} no copy to share yet`,
+  traySyncNow: 'Sync now',
+  traySyncTip: (percent: number) => `syncing ${percent}%`,
+  syncToastTitle: 'Syncing emotes',
+  syncToastBody: (have: number, total: number) =>
+    (total === 0 ? 'Nobody in the room has announced an image or a sound.' : have >= total ? `Everything announced is here (${total} files). Asked the room to check yours.` : `Asking the room again: ${have} of ${total} files are here.`),
+  syncToastOff: 'Show friends’ custom emotes is off, so nothing is fetched or sent.',
   trayRoomCopy: 'Copy code',
   trayRoomMute: 'Mute room',
   trayRoomLeave: 'Leave room',
@@ -1513,6 +1526,18 @@ const zh: Strings = {
   trayRoomCreate: '创建房间',
   trayRoomSettings: '房间设置…',
   trayRoomLabel: (code, n) => `${code} · ${n} 人`,
+  traySync: (have, total, percent) =>
+    (total === 0 ? '同步：没有需要获取的文件' : have >= total ? `同步：已完成（${total}/${total}）` : `同步：${percent}%（${have}/${total}）`),
+  traySyncOff: '同步：已关闭（未显示好友的自定义表情）',
+  traySyncMember: (name, have, total, percent) => (total === 0 ? `${name}：没有需要获取的文件` : `${name}：${percent}%（${have}/${total}）`),
+  traySyncMemberUnknown: (name) => `${name}：未回报（旧版本，或已关闭同步）`,
+  traySyncUnshared: (n) => `你有 ${n} 个声音还没有可分享的副本`,
+  traySyncNow: '立即同步',
+  traySyncTip: (percent) => `同步中 ${percent}%`,
+  syncToastTitle: '正在同步表情',
+  syncToastBody: (have, total) =>
+    (total === 0 ? '房间里还没有人公布图片或声音。' : have >= total ? `公布的文件都已到齐（${total} 个）。已请房间检查你的文件。` : `已重新向房间索取：${have}/${total} 个文件已到。`),
+  syncToastOff: '“显示好友的自定义表情”已关闭，所以不会获取也不会发送。',
   trayRoomCopy: '复制房间码',
   trayRoomMute: '房间静音',
   trayRoomLeave: '离开房间',

@@ -24,8 +24,10 @@ const { FakeTray, created } = vi.hoisted(() => {
       this.alive();
       this.images.push(image);
     }
-    setToolTip(): void {
+    tips: string[] = [];
+    setToolTip(tip: string): void {
       this.alive();
+      this.tips.push(tip);
     }
     setContextMenu(menu: unknown): void {
       this.alive();
@@ -56,10 +58,12 @@ vi.mock('electron', () => ({
   nativeImage: { createFromPath: () => fakeImage(), createFromBitmap: () => fakeImage() },
 }));
 
-import { AppTray, trayUpdateFrom } from '../../src/main/tray';
+import { AppTray, syncLines, trayUpdateFrom, type TraySync } from '../../src/main/tray';
 import { strings } from '../../src/shared/i18n';
 
-const room = { joinClipboard: vi.fn(), create: vi.fn(), copyCode: vi.fn(), setMuted: vi.fn(), leave: vi.fn(), openSettings: vi.fn() };
+const room = {
+  joinClipboard: vi.fn(), create: vi.fn(), copyCode: vi.fn(), setMuted: vi.fn(), syncNow: vi.fn(), leave: vi.fn(), openSettings: vi.fn(),
+};
 const update = { check: vi.fn(), start: vi.fn() };
 const teammate = { stop: vi.fn(), openHistory: vi.fn(), setHistoryPaused: vi.fn() };
 const handlers = {
@@ -274,5 +278,68 @@ describe('AppTray update item', () => {
     const tray = new AppTray('icon.png', handlers);
     tray.destroy();
     expect(() => tray.setUpdate({ phase: 'available', version: '0.5.1' })).not.toThrow();
+  });
+});
+
+describe('the tray’s sync status', () => {
+  const en = strings('en');
+  const sync = (over: Partial<TraySync> = {}): TraySync => ({ mine: { have: 12, total: 18 }, members: [], unshared: 0, ...over });
+  const labels = (): (string | undefined)[] => roomMenu().map((i) => i.label);
+
+  it('says how much of what the room announces is here, as a percentage that only reaches 100 when all of it is', () => {
+    expect(syncLines(sync(), en)).toEqual(['Sync: 66% (12 of 18)']);
+    expect(syncLines(sync({ mine: { have: 199, total: 200 } }), en)).toEqual(['Sync: 99% (199 of 200)']);
+    expect(syncLines(sync({ mine: { have: 18, total: 18 } }), en)).toEqual(['Sync: done (18 of 18)']);
+    expect(syncLines(sync({ mine: { have: 0, total: 0 } }), en)).toEqual(['Sync: nothing to fetch']);
+    expect(syncLines(sync({ mine: null }), en)).toEqual(['Sync: off (friends’ custom emotes are hidden)']);
+  });
+
+  it('lists each member’s own count, says when one doesn’t report it, and warns about sounds that can’t be shared yet', () => {
+    const lines = syncLines(sync({
+      members: [{ name: 'Alex', sync: { have: 9, total: 18 } }, { name: 'Old', sync: null }, { name: 'New', sync: { have: 0, total: 0 } }],
+      unshared: 2,
+    }), en);
+    expect(lines).toEqual([
+      'Sync: 66% (12 of 18)', 'Alex: 50% (9 of 18)', 'Old: no report (an older version, or sync off)', 'New: nothing to fetch',
+      '2 of your sounds have no copy to share yet',
+    ]);
+    expect(syncLines(sync({ unshared: 1 }), en).at(-1)).toBe('1 of your sounds has no copy to share yet');
+  });
+
+  it('doubles an ampersand in a member’s name, which a menu would otherwise read as a shortcut mark', () => {
+    expect(syncLines(sync({ members: [{ name: 'A&B', sync: null }] }), en)[1]).toMatch(/^A&&B: /);
+  });
+
+  it('has the same lines in Chinese', () => {
+    const zh = strings('zh-CN');
+    expect(syncLines(sync({ members: [{ name: 'Alex', sync: null }], unshared: 1 }), zh)).toEqual([
+      '同步：66%（12/18）', 'Alex：未回报（旧版本，或已关闭同步）', '你有 1 个声音还没有可分享的副本',
+    ]);
+  });
+
+  it('shows the lines and a Sync now command in the Room submenu, and redraws when a count moves', () => {
+    const tray = new AppTray('icon.png', handlers);
+    tray.setRoom({ code: 'PING-7KQ4M-2HXTR', count: 2, muted: false, sync: sync({ members: [{ name: 'Alex', sync: null }] }) });
+    expect(labels().slice(0, 4)).toEqual(['PING-7KQ4M-2HXTR · 2 people', 'Sync: 66% (12 of 18)', 'Alex: no report (an older version, or sync off)', 'Sync now']);
+    expect(roomMenu().slice(1, 3).every((i) => i.enabled === false)).toBe(true);
+    roomMenu().find((i) => i.label === 'Sync now')!.click!({});
+    expect(room.syncNow).toHaveBeenCalledTimes(1);
+
+    const menus = created[0].menus.length;
+    tray.setRoom({ code: 'PING-7KQ4M-2HXTR', count: 2, muted: false, sync: sync({ members: [{ name: 'Alex', sync: null }] }) });
+    expect(created[0].menus.length).toBe(menus); // nothing moved
+    tray.setRoom({ code: 'PING-7KQ4M-2HXTR', count: 2, muted: false, sync: sync({ mine: { have: 13, total: 18 }, members: [{ name: 'Alex', sync: null }] }) });
+    expect(created[0].menus.length).toBe(menus + 1);
+    expect(labels()[1]).toBe('Sync: 72% (13 of 18)');
+  });
+
+  it('puts the percentage in the tooltip only while files are still on their way', () => {
+    const tray = new AppTray('icon.png', handlers);
+    tray.setRoom({ code: 'PING-7KQ4M-2HXTR', count: 2, muted: false, sync: sync() });
+    expect(created[0].tips.at(-1)).toBe('lolPing: pings on · syncing 66%');
+    tray.setRoom({ code: 'PING-7KQ4M-2HXTR', count: 2, muted: false, sync: sync({ mine: { have: 18, total: 18 } }) });
+    expect(created[0].tips.at(-1)).toBe('lolPing: pings on');
+    tray.setRoom({ code: null, count: 0, muted: false, sync: sync() }); // left the room with files still missing
+    expect(created[0].tips.at(-1)).toBe('lolPing: pings on');
   });
 });

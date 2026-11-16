@@ -12,6 +12,7 @@ import type { WheelKind } from '../../shared/protocol';
 import { tagColorCss } from '../../shared/roomColors';
 import { DEFAULT_SETTINGS, overlaySettings, soundLevel, type OverlaySettings } from '../../shared/settings';
 import '../shared/emoteFx.css';
+import { encodeShared } from '../shared/soundShare';
 import { EmoteStage } from './emoteStage';
 import { GlowStage } from './glowFx';
 import { IdleWatch } from './idleWatch';
@@ -172,6 +173,19 @@ window.overlay.on('emote:spawn', (p) => {
   emote(p.owner, p.art, p.x, p.y, p.tag, p.keep === true);
 });
 window.overlay.on('emote:clear', (p) => stage.clear(p.owner));
+// Main has no audio encoder: it sends a stored sound here to get the small copy that room members hear.
+window.overlay.on('emote:encode', (p) => {
+  void (async () => {
+    let share: Uint8Array | null = null;
+    try {
+      const decoded = await new OfflineAudioContext(1, 1, 44_100).decodeAudioData(p.sound.slice().buffer);
+      share = await encodeShared(decoded);
+    } catch {
+      // not a sound this Chromium decodes: it stays on this computer
+    }
+    window.overlay.reportShare(p.id, share);
+  })();
+});
 window.overlay.on('toast:show', (t) => showToast(toastLayer, t.title, t.body));
 window.overlay.on('text:spawn', (t) => texts.spawn(t));
 window.overlay.on('mate:clear', clearMate);

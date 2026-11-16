@@ -108,6 +108,8 @@ export interface RoomDeps {
   announceEmotes(): readonly string[];
   /** For each of those hashes, in order, the hash of its shared sound or '' for none. Left out by tools that share none. */
   announceSounds?(): readonly string[];
+  /** How many of the files the room announces to us are here; null when we fetch none. Left out by tools that fetch none. */
+  syncProgress?(): { have: number; total: number } | null;
 }
 
 interface Member {
@@ -124,6 +126,8 @@ interface Member {
   muted: boolean;
   /** The custom emote hashes their last presence announced. */
   em: string[];
+  /** Their own count of files here and announced, from their last presence. */
+  sync: { have: number; total: number } | null;
   firstSeen: number;
   /** Ever heard over the internet: dropped after the longer silence. */
   viaInternet: boolean;
@@ -385,12 +389,12 @@ export class RoomManager extends EventEmitter {
       {
         peer: this.self, name: p.name, color: p.color, rgb: p.rgb, path: 'lan', status: this.status(),
         needsUpdate: false, noEmotes: false, noChat: false, textOff: p.nf.includes('text'), votesOff: p.nf.includes('votes'),
-        muted: false, self: true,
+        muted: false, sync: this.deps.syncProgress?.() ?? null, self: true,
       },
       ...[...this.members.values()].map((m) => ({
         peer: m.peer, name: m.name, color: m.color, rgb: m.rgb, path: this.path(m, now), status: m.status,
         needsUpdate: m.needsUpdate, noEmotes: m.noEmotes, noChat: m.noChat, textOff: m.textOff, votesOff: m.votesOff,
-        muted: m.muted, self: false,
+        muted: m.muted, sync: m.sync, self: false,
       })),
     ];
     return {
@@ -602,7 +606,7 @@ export class RoomManager extends EventEmitter {
       if (!t.shared && this.membersAt(t.kind, key) >= 2) return;
       m = {
         peer: msg.peer, name: msg.name, color: msg.color, rgb: msg.rgb ?? null, status: msg.status,
-        needsUpdate: false, noEmotes: false, noChat: false, textOff: false, votesOff: false, muted: false, em: [],
+        needsUpdate: false, noEmotes: false, noChat: false, textOff: false, votesOff: false, muted: false, em: [], sync: null,
         firstSeen: this.deps.now(), viaInternet: false, paths: {}, pk: null,
       };
       this.members.set(m.peer, m);
@@ -622,6 +626,7 @@ export class RoomManager extends EventEmitter {
     m.textOff = msg.nf.includes('text');
     m.votesOff = msg.nf.includes('votes');
     m.em = msg.em;
+    m.sync = msg.sy ? { have: msg.sy[0], total: msg.sy[1] } : null;
     // Every presence, so a hash whose assembly gave up is asked for again: EmoteTransfer skips what is already here.
     // A paused lolPing neither fetches nor serves stills or sounds; the next presence after unpausing starts prefetch again.
     if (!this.paused) this.emit('emotes', m.peer, [...m.em], [...msg.sn]);
@@ -704,11 +709,13 @@ export class RoomManager extends EventEmitter {
     const p = this.deps.profile();
     const em = [...this.deps.announceEmotes()];
     const sn = this.deps.announceSounds?.() ?? [];
+    const sync = this.deps.syncProgress?.() ?? null;
     return this.seal({
       t: 'presence', proto: PROTOCOL_VERSION, app: this.deps.appVersion, name: p.name, color: p.color, status: this.status(),
       em, pk: this.identity.pk.toString('base64'),
       // Left out when no announced emote has a shared sound: most presences then stay as small as before.
       ...(sn.length === em.length && sn.some((h) => h !== '') ? { sn: [...sn] } : {}),
+      ...(sync ? { sy: [sync.have, sync.total] } : {}),
       // Left out when nothing is off, so a presence to an older peer carries nothing new.
       ...(p.nf.length ? { nf: [...p.nf] } : {}),
       // Left out rather than sent as null: a peer on an older build ignores it either way, and this keeps the packet small.

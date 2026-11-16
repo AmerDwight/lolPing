@@ -34,6 +34,11 @@ export interface PresenceMsg extends Base {
   color: number;
   /** A custom tag colour, three 0–255 channels. Optional: a peer on an older build sends none, and ignores ours. */
   rgb?: TagRgb;
+  /**
+   * Added after 0.6.0: how much of what the room announces this member has: [files here, files announced to it], stills
+   * and shared sounds of everyone else's wheels. Left out by older apps, and by one that fetches nothing.
+   */
+  sy?: [number, number];
   status: MemberStatus;
   /** Added in 0.5.2: the 32-hex hashes of the custom emotes on our wheel and centre, at most 9. Older apps leave it out. */
   em: string[];
@@ -166,6 +171,8 @@ export const SOUND_CHUNKS_MAX = 22;
 const CHUNKS_MAX = Math.max(EMOTE_CHUNKS_MAX, SOUND_CHUNKS_MAX);
 /** Chunk indexes in a `want`'s `need`: at most this many entries, each below the largest chunk count. */
 export const EMOTE_NEED_MAX = 64;
+/** The most files a presence's `sy` may count. */
+export const SYNC_FILES_MAX = 999;
 /** Blob `b` is at most this many base64 characters (6,000 bytes); 3 parts carry a full 16 KB shared sound. */
 export const BLOB_B64_MAX = 8000;
 export const BLOB_PARTS_MAX = 3;
@@ -210,7 +217,7 @@ export function validateMessage(raw: unknown): RoomMessage | null {
   const base = { peer, seq, ts };
   switch (t) {
     case 'presence': {
-      const { proto, app, name, color, rgb, status, em, sn, nf, pk } = raw;
+      const { proto, app, name, color, rgb, status, em, sn, sy, nf, pk } = raw;
       if (!isUint(proto) || typeof app !== 'string' || app.length > MAX_APP_VERSION || typeof name !== 'string') return null;
       if (!isTagColor(color) || !STATUSES.includes(status as MemberStatus)) return null;
       const hashes = emList(em);
@@ -219,6 +226,10 @@ export function validateMessage(raw: unknown): RoomMessage | null {
         em: hashes, sn: snList(sn, em, hashes), nf: nfList(nf), ...(typeof pk === 'string' && PK_RE.test(pk) ? { pk } : {}),
       };
       // A malformed custom colour is dropped rather than the whole presence: an unreadable tag beats a missing member.
+      // 16 members' full wheels with sounds are 270 files; anything past that, or more here than announced, isn't a count.
+      if (Array.isArray(sy) && sy.length === 2 && isUint(sy[0]) && isUint(sy[1]) && sy[0] <= sy[1] && sy[1] <= SYNC_FILES_MAX) {
+        presence.sy = [sy[0], sy[1]];
+      }
       return isTagRgb(rgb) ? { ...presence, rgb } : presence;
     }
     case 'ping': {

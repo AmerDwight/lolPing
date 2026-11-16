@@ -11,7 +11,7 @@ import { resolveLang, strings, type Strings } from '../shared/i18n';
 import {
   SETTINGS_CH, type About, type AppStatus, type PanelAction, type PanelState, type TeammateHistoryOp,
 } from '../shared/ipc';
-import { announcedEmoteHashes, announcedEmoteSounds, customHash, isCustomRef, sharedSoundUrl } from '../shared/emotes';
+import { announcedEmoteHashes, announcedEmoteSounds, customHash, isCustomRef, sharedSoundUrl, type EmoteRef } from '../shared/emotes';
 import { featureOn, liveKeys, roomFeaturesOff } from '../shared/features';
 import { hotkeyLabel } from '../shared/keys';
 import { LOGO_TEXTURE } from '../shared/pings';
@@ -33,6 +33,7 @@ import { registerAppScheme, serveAppScheme } from './appProtocol';
 import { resolveTarget, toShared } from './displayNumbers';
 import { EmoteCache } from './emoteCache';
 import { EmoteLibrary, resolveEmoteArt, shareName } from './emoteLibrary';
+import { ShareBackfill } from './shareBackfill';
 import { EmoteTransfer } from './emoteTransfer';
 import { isFile } from './fileState';
 import { InputBridge } from './inputBridge';
@@ -316,9 +317,10 @@ function start(): void {
     // With emotes switched off we announce none, so friends don't send stills for emotes we won't use.
     announceEmotes: () => (featureOn(settings, 'emotes') ? announcedEmoteHashes(settings.emoteWheel, settings.clickEmoteId) : []),
     announceSounds: () => (featureOn(settings, 'emotes') ? ourSounds() : []),
+    syncProgress: () => transfer.progress(),
   });
   // Custom emote stills and their shared sounds travel both ways: this side asks for friends' hashes and answers wants for our own.
-  const transfer = new EmoteTransfer({
+  const transfer: EmoteTransfer = new EmoteTransfer({
     now: Date.now,
     enabled: () => settings.friendEmotes && featureOn(settings, 'emotes'),
     have: (hash, kind) => (kind === 'still' ? isFile(join(library.dir, `${hash}.webp`), false) || cache.has(hash) : soundCache.has(hash)),
@@ -342,6 +344,29 @@ function start(): void {
     spareSharedToken: (keep) => room.spareSharedToken(keep),
   });
   room.on('emotes', (peer: string, hashes: string[], sounds: string[]) => transfer.announced(peer, hashes, sounds));
+  // A sound with no copy for rooms (added before sounds travelled) gets one from the overlay, which has the encoder.
+  const backfill = new ShareBackfill({
+    now: Date.now,
+    emotes: () => settings.customEmotes,
+    readSound: (id) => library.readSound(id),
+    encode: (id, sound) => overlays.encodeShare(id, sound),
+    save: async (id, share) => {
+      const hash = await library.setShare(id, share);
+      if (hash) store.update({ customEmotes: store.get().customEmotes.map((c) => (c.id === id && c.sound ? { ...c, share: hash } : c)) });
+      pushRoom(); // one sound fewer without a copy
+    },
+  });
+  overlays.on('share', (p: { id: EmoteRef; share: Uint8Array | null }) => void backfill.onResult(p.id, p.share).catch(() => undefined));
+  const backfillTimer = setInterval(() => void backfill.run().catch(() => undefined), 5000);
+  backfillTimer.unref();
+  /** The tray's Sync now: ask for everything missing again, have the room check what it has of ours, and say where things stand. */
+  function syncNow(): void {
+    transfer.resync();
+    room.profileChanged(); // a presence now: the others look again at what we announce
+    void backfill.retry().catch(() => undefined);
+    const p = transfer.progress();
+    overlays.toast(text().syncToastTitle, p ? text().syncToastBody(p.have, p.total) : text().syncToastOff);
+  }
   room.on('want', (w: Parameters<EmoteTransfer['onWant']>[0]) => transfer.onWant(w));
   room.on('chunk', (c: Parameters<EmoteTransfer['onChunk']>[0]) => transfer.onChunk(c));
   room.on('blob', (c: Parameters<EmoteTransfer['onBlob']>[0]) => transfer.onBlob(c));
@@ -416,6 +441,7 @@ function start(): void {
         create: () => void room.create(),
         copyCode: copyRoomCode,
         setMuted: (on) => store.update({ roomMuted: on }),
+        syncNow,
         leave: () => room.leave(),
         openSettings: () => openSettingsWindow('room'),
       },
@@ -449,10 +475,23 @@ function start(): void {
     });
     tray.setUpdate(trayUpdateFrom(updater.state));
   }
+  let syncDone = false;
   function pushRoom(): void {
     if (quitting) return;
     const s = roomState();
-    tray.setRoom({ code: s.code, count: s.members.length, muted: settings.roomMuted });
+    const me = s.members.find((m) => m.self);
+    tray.setRoom({
+      code: s.code, count: s.members.length, muted: settings.roomMuted,
+      sync: {
+        mine: me?.sync ?? null,
+        members: s.members.filter((m) => !m.self).map((m) => ({ name: m.name, sync: m.sync })),
+        unshared: backfill.missing(),
+      },
+    });
+    // The moment everything has arrived, say so, instead of leaving the others on an old count until the next presence.
+    const done = !!me?.sync && me.sync.total > 0 && me.sync.have >= me.sync.total;
+    if (done && !syncDone) room.profileChanged();
+    syncDone = done;
     settingsWindow()?.webContents.send(SETTINGS_CH.roomChanged, s);
   }
   const syncRoomFlags = (): void => room.setStatusFlags({ paused: !enabled, roomMuted: settings.roomMuted });

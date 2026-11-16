@@ -227,6 +227,40 @@ export class EmoteTransfer {
     for (const [hash, a] of this.assemblies) if (a.ask === peer) this.assemblies.delete(hash);
   }
 
+  /**
+   * How much of what the room announces is here: every still and shared sound on the other members' wheels, each
+   * counted once. Null while the switch is off, since nothing is fetched then.
+   */
+  progress(): { have: number; total: number } | null {
+    if (!this.deps.enabled()) return null;
+    const wanted = new Map<string, BlobKind>();
+    for (const a of this.announcers.values()) {
+      for (const hash of a.stills) if (!wanted.has(hash)) wanted.set(hash, 'still');
+      for (const hash of a.sounds.values()) if (!wanted.has(hash)) wanted.set(hash, 'sound');
+    }
+    let have = 0;
+    for (const [hash, kind] of wanted) if (this.deps.have(hash, kind)) have++;
+    return { have, total: wanted.size };
+  }
+
+  /**
+   * Starts over for everything that isn't here, now: assemblies ask again from the beginning, with blob parts first, and
+   * whatever had been given up until the next presence is asked for at once. For the Sync now command.
+   */
+  resync(): void {
+    if (!this.deps.enabled()) return;
+    const now = this.deps.now();
+    for (const a of this.assemblies.values()) {
+      a.asked = false; // the tick sends the want, when a token allows
+      a.reasks = 0;
+      a.firstAt = a.lastAt = now;
+    }
+    for (const [peer, a] of this.announcers) {
+      for (const hash of a.stills) this.prefetch(peer, hash, 'still');
+      for (const hash of a.sounds.values()) this.prefetch(peer, hash, 'sound');
+    }
+  }
+
   get stats(): { assembling: number; sending: number } {
     return { assembling: this.assemblies.size, sending: this.sends.size };
   }

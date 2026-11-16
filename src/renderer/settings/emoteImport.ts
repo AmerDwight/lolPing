@@ -4,7 +4,7 @@ import {
   STILL_SIDE, type EmoteFile, type ImportError, type SoundError,
 } from '../../shared/emotes';
 import { imageSize, sniffImage, type ImageType } from '../../shared/imageSniff';
-import { encodeShared } from './soundShare';
+import { encodeShared } from '../shared/soundShare';
 
 export type Prepared = { ok: true; file: EmoteFile } | { ok: false; error: ImportError };
 /** `share` is the small copy for room members, or null when it couldn't be made. */

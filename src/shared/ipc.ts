@@ -41,6 +41,8 @@ export interface OverlayEvents {
    * `keep`: the teammate's emote stays until mate:clear or mate:fade.
    */
   'emote:spawn': Point & { owner: string; art: EmoteArt; tag?: PingTag; ticket?: string; keep?: boolean };
+  /** An imported emote's stored sound, to encode into its copy for rooms; the answer goes back on OVERLAY_SHARE. */
+  'emote:encode': { id: EmoteRef; sound: Uint8Array };
   'emote:clear': { owner: string };
   'toast:show': { title: string; body: string };
   /** `owner` is 'self' or a room member: each owner has at most 3 lines on screen. */
@@ -86,7 +88,7 @@ export interface MateMark {
 export type OverlayChannel = keyof OverlayEvents;
 
 export const OVERLAY_CHANNELS: readonly OverlayChannel[] = [
-  'overlay:settings', 'wheel:open', 'wheel:move', 'wheel:release', 'wheel:cancel', 'ping:spawn', 'ping:unkeep', 'emote:spawn', 'emote:clear',
+  'overlay:settings', 'wheel:open', 'wheel:move', 'wheel:release', 'wheel:cancel', 'ping:spawn', 'ping:unkeep', 'emote:spawn', 'emote:encode', 'emote:clear',
   'toast:show', 'text:spawn', 'mate:clear', 'mate:fade', 'mate:ticket', 'mate:said', 'mate:glow',
 ];
 
@@ -203,6 +205,8 @@ export const OVERLAY_PINGED = 'overlay:pinged';
 export const OVERLAY_EMOTED = 'overlay:emoted';
 /** overlay renderer → main: true once nothing has been on the overlay for a moment, false when something shows again. */
 export const OVERLAY_IDLE = 'overlay:idle';
+/** overlay renderer → main: {id, share}: the copy for rooms it encoded from an 'emote:encode' sound, or null when it couldn't. */
+export const OVERLAY_SHARE = 'overlay:share';
 
 export interface AppStatus {
   enabled: boolean;

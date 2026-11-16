@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { preSkipOf, SHARE_BITRATES } from '../../src/renderer/settings/soundShare';
+import { preSkipOf, SHARE_BITRATES } from '../../src/renderer/shared/soundShare';
 
 const head = (preSkip: number, magic = 'OpusHead'): Uint8Array => {
   const b = new Uint8Array(19);

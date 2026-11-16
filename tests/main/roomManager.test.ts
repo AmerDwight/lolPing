@@ -903,13 +903,14 @@ describe('emote transfers', () => {
   const sound = 'fedcba9876543210fedcba9876543210';
 
   /** The room under test, with the self peer id pinned so `want` addressing can be asserted. `sounds`: what it announces beside its hash. */
-  const make = (sounds?: () => string[]): RoomManager => {
+  const make = (sounds?: () => string[], syncProgress?: () => { have: number; total: number } | null): RoomManager => {
     const r = new RoomManager({
       transports: [lan], now: () => Date.now(), randomBytes: (n) => new Uint8Array(n).fill(0xab),
       deriveKeys: async () => KEYS, appVersion: '0.5.1', profile: () => profile,
       resolveTarget: (d) => (d === 1 ? { displayId: 100, width: 1920, height: 1080 } : null),
       announceEmotes: () => [hash],
       ...(sounds ? { announceSounds: sounds } : {}),
+      ...(syncProgress ? { syncProgress } : {}),
     });
     r.on('emotes', (peer: string, hashes: string[], heard: string[]) => emotes.push({ peer, hashes, sounds: heard }));
     r.on('want', (w: RoomMessage) => wants.push(w));
@@ -956,6 +957,26 @@ describe('emote transfers', () => {
     alex.presence({ em: [hash], sn: [sound] });
     expect(emotes.at(-1)).toEqual({ peer: '1111111111111111', hashes: [hash], sounds: [sound] });
     expect(sentMessages('lan:a').find((m) => m.t === 'presence')).toMatchObject({ em: [hash], sn: [sound] });
+  });
+
+  it('tells the room how much of it is here, and shows each member’s own count', async () => {
+    room.quit();
+    let mine: { have: number; total: number } | null = { have: 3, total: 7 };
+    room = make(undefined, () => mine);
+    await joinActive();
+    expect(rawPresences().at(-1)).toContain('"sy":[3,7]');
+    const alex = new Remote('1111111111111111', 'lan:a', lan);
+    alex.presence({ sy: [5, 9] });
+    new Remote('2222222222222222', 'lan:b', lan).presence(); // an app that doesn't say
+    expect(room.state().members.map((m) => m.sync)).toEqual([{ have: 3, total: 7 }, { have: 5, total: 9 }, null]);
+    alex.presence(); // it stopped saying: the old count must not linger
+    expect(room.state().members[1].sync).toBeNull();
+
+    mine = null; // friends' emotes switched off: nothing is fetched, so nothing is claimed
+    lan.sent = [];
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(rawPresences().length).toBeGreaterThan(0);
+    expect(rawPresences().some((text) => text.includes('"sy"'))).toBe(false);
   });
 
   it('leaves sounds out of a presence when no announced emote has one, or when they don’t line up with the hashes', async () => {

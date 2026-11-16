@@ -1,5 +1,6 @@
 import { Menu, Tray, nativeImage, type MenuItemConstructorOptions, type NativeImage } from 'electron';
 import { strings, type Strings } from '../shared/i18n';
+import { syncPercent } from '../shared/room';
 import type { UpdateState } from '../shared/update';
 
 export type TrayMode = 'on' | 'off' | 'failed' | 'noAccess';
@@ -26,6 +27,8 @@ export interface TrayHandlers {
     create(): void;
     copyCode(): void;
     setMuted(on: boolean): void;
+    /** Asks the room again for everything that isn't here, and tells it to check what it has of ours. */
+    syncNow(): void;
     leave(): void;
     /** Opens settings at the Room section. */
     openSettings(): void;
@@ -38,11 +41,37 @@ export interface TrayHandlers {
   };
 }
 
+type SyncCount = { have: number; total: number };
+
+/** How far the room's custom emotes and their sounds have travelled. */
+export interface TraySync {
+  /** Files here out of the files the other members announce; null while friends' custom emotes are switched off. */
+  mine: SyncCount | null;
+  /** Each other member's own count, in the room's order; null for one that doesn't report it. */
+  members: { name: string; sync: SyncCount | null }[];
+  /** Our sounds that have no copy for rooms yet: nobody can hear those. */
+  unshared: number;
+}
+
 /** What the tray shows about the room: `code` is null when not in one. */
 export interface TrayRoom {
   code: string | null;
   count: number;
   muted: boolean;
+  sync?: TraySync;
+}
+
+/** A menu label shows the character after "&" underlined on Windows: a member's name is text, so its "&" is doubled. */
+const plain = (label: string): string => label.replace(/&/g, '&&');
+
+/** The Room submenu's lines about sync: our count, each member's, and a warning about sounds that can't be shared yet. */
+export function syncLines(sync: TraySync, t: Strings): string[] {
+  const lines = [sync.mine ? t.traySync(sync.mine.have, sync.mine.total, syncPercent(sync.mine)) : t.traySyncOff];
+  for (const m of sync.members) {
+    lines.push(plain(m.sync ? t.traySyncMember(m.name, m.sync.have, m.sync.total, syncPercent(m.sync)) : t.traySyncMemberUnknown(m.name)));
+  }
+  if (sync.unshared > 0) lines.push(t.traySyncUnshared(sync.unshared));
+  return lines;
 }
 
 /** What the tray shows about the teammate; null while the feature is off, so the menu has no teammate items. */
@@ -131,7 +160,8 @@ export class AppTray {
   setRoom(room: TrayRoom): void {
     if (this.destroyed) return;
     const r = this.room;
-    if (r.code === room.code && r.count === room.count && r.muted === room.muted) return; // room state changes often
+    // room state changes often
+    if (r.code === room.code && r.count === room.count && r.muted === room.muted && JSON.stringify(r.sync) === JSON.stringify(room.sync)) return;
     this.room = room;
     this.render();
   }
@@ -179,7 +209,10 @@ export class AppTray {
     const noAccess = this.mode === 'noAccess';
     this.tray.setImage(this.icons[this.mode === 'noAccess' ? 'failed' : this.mode]);
     const t = this.text;
-    this.tray.setToolTip(failed ? t.trayTipFailed : noAccess ? t.trayTipNoAccess : t.trayTip(this.enabled));
+    const mine = this.room.code ? this.room.sync?.mine : null;
+    // While files are still on their way the tooltip says how far along, so it can be read without opening the menu.
+    const syncing = mine && mine.have < mine.total ? ` · ${t.traySyncTip(syncPercent(mine))}` : '';
+    this.tray.setToolTip(failed ? t.trayTipFailed : noAccess ? t.trayTipNoAccess : `${t.trayTip(this.enabled)}${syncing}`);
     const items: MenuItemConstructorOptions[] = [];
     const updateItem = this.updateItem();
     if (updateItem) items.push(updateItem, { type: 'separator' });
@@ -237,8 +270,12 @@ export class AppTray {
         settings,
       ];
     }
+    const sync: MenuItemConstructorOptions[] = this.room.sync
+      ? [...syncLines(this.room.sync, t).map((label) => ({ label, enabled: false })), { label: t.traySyncNow, click: () => r.syncNow() }]
+      : [];
     return [
       { label: t.trayRoomLabel(this.room.code, this.room.count), enabled: false },
+      ...sync,
       { type: 'separator' },
       { label: t.trayRoomCopy, click: () => r.copyCode() },
       { label: t.trayRoomMute, type: 'checkbox', checked: this.room.muted, click: (item) => r.setMuted(item.checked) },

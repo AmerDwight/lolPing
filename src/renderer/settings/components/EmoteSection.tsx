@@ -5,7 +5,7 @@ import {
 import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_CLICK_EMOTE, DEFAULT_EMOTE_WHEEL, EMOTE_CATALOG } from '../../../shared/emoteCatalog';
 import {
-  MAX_CUSTOM_EMOTES, customHash, customSoundUrl, customStillUrl, emoteIconUrl, emoteName, type CustomEmote, type EmoteRef, type ImportError,
+  MAX_CUSTOM_EMOTES, customHash, customStillUrl, emoteIconUrl, emoteName, type CustomEmote, type EmoteRef, type ImportError,
   type SoundError,
 } from '../../../shared/emotes';
 import type { Strings } from '../../../shared/i18n';
@@ -53,34 +53,6 @@ async function soundFile(id: EmoteRef, file: File): Promise<SoundError | null> {
   } catch {
     return 'disk';
   }
-}
-
-/**
- * A sound added before sounds could travel has no copy for rooms: make one from the stored sound, once per emote for as
- * long as the window is open. Nothing is said when it can't be made; the sound goes on playing here.
- */
-function useShareBackfill(custom: readonly CustomEmote[]): void {
-  const tried = useRef(new Set<EmoteRef>());
-  const latest = useRef(custom);
-  latest.current = custom;
-  useEffect(() => {
-    for (const c of custom) {
-      if (!c.sound || c.share || tried.current.has(c.id)) continue;
-      tried.current.add(c.id);
-      void (async () => {
-        try {
-          const res = await fetch(customSoundUrl(customHash(c.id)), { cache: 'no-store' });
-          if (!res.ok) return;
-          const prepared = await prepareSound(new File([await res.arrayBuffer()], c.name));
-          // The sound may have been removed or replaced while this one was encoding: only the same, still unshared one is saved.
-          const now = latest.current.find((e) => e.id === c.id);
-          if (prepared.ok && prepared.share && now?.sound && !now.share) await api.setEmoteSound(c.id, prepared.bytes, prepared.share);
-        } catch {
-          // stays on this computer
-        }
-      })();
-    }
-  }, [custom]);
 }
 
 /** Prepares one image here and hands it to main, which checks and saves it. */
@@ -165,7 +137,6 @@ export function EmoteSection({ settings: s, update, lengthUnit }: { settings: Se
   const key = s.emoteTrigger === 'off' ? t.emoteKey : triggerLabel(s.emoteTrigger, t.lang, api.platform);
 
   const { busy, errors, importFiles, importSound, clearErrors } = useImports(t);
-  useShareBackfill(s.customEmotes);
   const picker = useRef<HTMLInputElement>(null);
   const soundPicker = useRef<HTMLInputElement>(null);
   const soundFor = useRef<EmoteRef | null>(null); // the emote whose speaker opened the sound picker

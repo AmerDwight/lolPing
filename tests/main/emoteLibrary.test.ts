@@ -201,6 +201,23 @@ describe('EmoteLibrary', () => {
     expect(new Uint8Array(readFileSync(join(lib.dir, `${hash}.share.ogg`)))).toEqual(share);
   });
 
+  it('reads back the stored sound, and gives a sound that has none a copy for rooms', async () => {
+    const lib = new EmoteLibrary(join(tempDir(), 'emotes'));
+    const hash = hashOf(still());
+    await lib.save({ name: 'x', still: still() }, []);
+    expect(await lib.readSound(`c:${hash}`)).toBeNull();
+    await lib.setSound(`c:${hash}`, mp3());
+    expect(await lib.readSound(`c:${hash}`)).toEqual(mp3());
+    expect(await lib.readSound('../settings')).toBeNull();
+
+    const share = opusSound(1);
+    expect(await lib.setShare(`c:${hash}`, share)).toBe(hashOf(share));
+    expect(files(lib.dir)).toEqual([`${hash}.share.ogg`, `${hash}.sound.mp3`, `${hash}.webp`]);
+    expect(await lib.setShare(`c:${hash}`, ogg())).toBeNull(); // not Ogg Opus: the copy that was there stays
+    expect(await lib.setShare('../settings', share)).toBeNull();
+    expect(new Uint8Array(readFileSync(join(lib.dir, `${hash}.share.ogg`)))).toEqual(share);
+  });
+
   it('saves the sound without a copy that fails its checks, and drops the copy of the sound it replaces', async () => {
     const lib = new EmoteLibrary(join(tempDir(), 'emotes'));
     const hash = hashOf(still());

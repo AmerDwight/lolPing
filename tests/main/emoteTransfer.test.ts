@@ -601,3 +601,46 @@ describe('EmoteTransfer: blob parts over relays', () => {
     expect(h.cache.get(hash)).toEqual(image);
   });
 });
+
+describe('EmoteTransfer: progress and Sync now', () => {
+  it('counts every still and shared sound the others announce once, and how many are here', () => {
+    const h = harness();
+    const OTHER = 'cccccccccccccccc';
+    const [a, b] = [still(600, 20), still(600, 21)];
+    const sound = opusSound(1, 20);
+    h.routes.set(ANNOUNCER, 'lan');
+    h.routes.set(OTHER, 'lan');
+    expect(h.t.progress()).toEqual({ have: 0, total: 0 });
+    h.t.announced(ANNOUNCER, [hashOf(a), hashOf(b)], [hashOf(sound), '']);
+    h.t.announced(OTHER, [hashOf(a)]); // the same image on two wheels is one file
+    expect(h.t.progress()).toEqual({ have: 0, total: 3 });
+    h.t.onChunk(chunkOf(hashOf(a), 0, 1, a));
+    h.t.onChunk(chunkOf(hashOf(sound), 0, 1, sound));
+    expect(h.t.progress()).toEqual({ have: 2, total: 3 });
+    h.t.memberGone(ANNOUNCER);
+    expect(h.t.progress()).toEqual({ have: 1, total: 1 });
+    h.setEnabled(false);
+    expect(h.t.progress()).toBeNull(); // nothing is fetched while the switch is off
+  });
+
+  it('asks again at once for what had been given up, and from the start for what is under way', async () => {
+    const h = harness();
+    const [a, b] = [still(EMOTE_CHUNK_BYTES * 2, 22), still(600, 23)];
+    h.routes.set(ANNOUNCER, 'lan');
+    h.t.announced(ANNOUNCER, [hashOf(a), hashOf(b)]);
+    h.t.onChunk(chunkOf(hashOf(a), 0, 2, a.subarray(0, EMOTE_CHUNK_BYTES)));
+    await vi.advanceTimersByTimeAsync(3000 * (REASKS_MAX + 2)); // both gave up: nothing more until the next presence
+    expect(h.t.stats.assembling).toBe(0);
+    h.out.length = 0;
+
+    h.t.resync();
+    expect(h.out.map((o) => o.body)).toEqual([
+      expect.objectContaining({ t: 'want', h: hashOf(a), need: [] }), expect.objectContaining({ t: 'want', h: hashOf(b), need: [] }),
+    ]);
+    h.t.onChunk(chunkOf(hashOf(b), 0, 1, b));
+    h.out.length = 0;
+    h.t.resync(); // one is here now; the other is under way and is asked for again on the next tick
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.out.map((o) => o.body.h)).toEqual([hashOf(a)]);
+  });
+});
