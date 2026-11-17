@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { EmoteLibrary } from '../../src/main/emoteLibrary';
-import { registerSettingsIpc, type SettingsIpcDeps } from '../../src/main/settingsIpc';
+import { artPreviewFrom, registerSettingsIpc, type SettingsIpcDeps } from '../../src/main/settingsIpc';
 import { SettingsStore } from '../../src/main/settingsStore';
 import { SecretStore, type Crypto } from '../../src/main/teammate/secrets';
 import { ProviderError } from '../../src/main/teammate/providers/types';
@@ -495,5 +495,22 @@ describe('teammate IPC without keys', () => {
     expect(await call(SETTINGS_CH.teammateStatus)).toMatchObject({ screenAccess: false });
     await call(SETTINGS_CH.teammateOpenScreen);
     expect(opened).toBe(1);
+  });
+});
+
+describe('artPreviewFrom', () => {
+  const webp = Uint8Array.from([...Buffer.from('RIFF'), 0, 0, 0, 0, ...Buffer.from('WEBPVP8 ')]);
+
+  it('takes a size alone, or a size with an image', () => {
+    expect(artPreviewFrom({ w: 300, h: 200 })).toEqual({ w: 300, h: 200 });
+    expect(artPreviewFrom({ bytes: webp, w: 300, h: 200 })).toEqual({ bytes: webp, w: 300, h: 200 });
+  });
+
+  it('refuses sizes that are not whole px from 1 to 2048, and bytes that are not an image', () => {
+    for (const bad of [{ w: 0, h: 10 }, { w: 3000, h: 10 }, { w: 1.5, h: 10 }, { w: 10 }, null, 'x']) {
+      expect(artPreviewFrom(bad), JSON.stringify(bad)).toBeNull();
+    }
+    expect(artPreviewFrom({ bytes: Uint8Array.of(1, 2, 3), w: 10, h: 10 })).toBeNull();
+    expect(artPreviewFrom({ bytes: 'webp', w: 10, h: 10 })).toBeNull();
   });
 });

@@ -19,6 +19,7 @@ const api: SettingsApi = {
   setEnabled: (on) => ipcRenderer.invoke(SETTINGS_CH.setEnabled, on),
   previewPing: (id) => ipcRenderer.invoke(SETTINGS_CH.preview, id),
   previewEmote: (ref) => ipcRenderer.invoke(SETTINGS_CH.previewEmote, ref),
+  previewArt: (art) => ipcRenderer.invoke(SETTINGS_CH.previewArt, art),
   importEmote: (file) => ipcRenderer.invoke(SETTINGS_CH.emoteImport, file),
   removeEmote: (id) => ipcRenderer.invoke(SETTINGS_CH.emoteRemove, id),
   setEmoteSound: (id, sound, share) => ipcRenderer.invoke(SETTINGS_CH.emoteSound, id, sound, share ?? null),

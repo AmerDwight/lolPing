@@ -8,6 +8,7 @@ export const SETTINGS_CH = {
   setEnabled: 'app:setEnabled',
   preview: 'app:preview',
   previewEmote: 'app:previewEmote',
+  previewArt: 'app:previewArt',
   emoteImport: 'emote:import',
   emoteRemove: 'emote:remove',
   emoteSound: 'emote:sound',

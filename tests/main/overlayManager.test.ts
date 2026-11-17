@@ -8,8 +8,8 @@ type Rect = { x: number; y: number; width: number; height: number };
 
 const h = vi.hoisted(() => {
   const initial = () => [
-    { id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, scaleFactor: 1 },
-    { id: 2, bounds: { x: 1920, y: 0, width: 1280, height: 1024 }, scaleFactor: 1 },
+    { id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 }, scaleFactor: 1 },
+    { id: 2, bounds: { x: 1920, y: 0, width: 1280, height: 1024 }, workArea: { x: 1920, y: 0, width: 1280, height: 1024 }, scaleFactor: 1 },
   ];
   const displays = initial();
   return {
@@ -91,6 +91,7 @@ vi.mock('electron', async () => {
   const screen = Object.assign(new Emitter(), {
     getAllDisplays: () => h.displays,
     getPrimaryDisplay: () => h.displays[0],
+    getDisplayMatching: (r: Rect) => h.displays.find((d) => r.x + r.width / 2 >= d.bounds.x && r.x + r.width / 2 < d.bounds.x + d.bounds.width) ?? h.displays[0],
     dipToScreenRect: (_win: unknown, r: unknown) => r,
   });
   screen.setMaxListeners(0); // every test starts a manager on this one fake screen
@@ -541,6 +542,34 @@ describe('OverlayManager remote and preview emotes', () => {
   });
 });
 
+describe('OverlayManager size preview', () => {
+  const art = { bytes: Uint8Array.of(1, 2, 3), w: 300, h: 200 };
+
+  it('shows the emote being added beside the settings window, on its display, and only the new size after that', () => {
+    mgr.showArtPreview(art, { x: 0, y: 100, width: 900, height: 700 });
+    expect(sent(0)).toEqual([['preview:art', { bytes: art.bytes, w: 300, h: 200, x: 1410, y: 520, over: false }]]);
+    mgr.showArtPreview({ w: 600, h: 400 }, { x: 0, y: 100, width: 900, height: 700 });
+    expect(sent(0)[1]).toEqual(['preview:art', { w: 600, h: 400, x: 1410, y: 520, over: false }]);
+    expect(sent(1)).toEqual([]);
+  });
+
+  it('follows the window to another display, taking the image along', () => {
+    mgr.showArtPreview(art, { x: 0, y: 100, width: 900, height: 700 });
+    mgr.showArtPreview({ w: 300, h: 200 }, { x: 2000, y: 100, width: 900, height: 700 });
+    expect(sent(0)[1]).toEqual(['preview:art', null]);
+    expect(sent(1)).toEqual([['preview:art', { bytes: art.bytes, w: 300, h: 200, x: 1130, y: 512, over: false }]]);
+  });
+
+  it('says when it covers part of the window, too big for the room beside it, and goes away when hidden', () => {
+    mgr.showArtPreview({ ...art, w: 1600, h: 900 }, { x: 400, y: 200, width: 900, height: 700 });
+    expect(sent(0)[0]).toEqual(['preview:art', { bytes: art.bytes, w: 1600, h: 900, x: 1120, y: 520, over: true }]);
+    mgr.hideArtPreview();
+    expect(sent(0)[1]).toEqual(['preview:art', null]);
+    mgr.hideArtPreview(); // already gone: nothing more to send
+    expect(sent(0)).toHaveLength(2);
+  });
+});
+
 describe('OverlayManager window bounds', () => {
   it('leaves the bottom row of each display uncovered on Windows, so the taskbar does not see a full-screen app', () => {
     for (const w of h.windows) w.emit('ready-to-show');
@@ -793,7 +822,7 @@ describe('OverlayManager capture exclusion', () => {
 
   it('excludes an overlay built for a display that appears mid-capture', () => {
     mgr.setCaptureExcluded(true);
-    h.displays.push({ id: 3, bounds: { x: 3200, y: 0, width: 800, height: 600 }, scaleFactor: 1 });
+    h.displays.push({ id: 3, bounds: { x: 3200, y: 0, width: 800, height: 600 }, workArea: { x: 3200, y: 0, width: 800, height: 600 }, scaleFactor: 1 });
     mgr.handle({ type: 'wheelOpen', x: 10, y: 10, wheel: 'ping' }); // the next gesture finds the new display
     expect(h.windows).toHaveLength(3);
     expect(h.windows[2].contentProtection).toEqual([true]);

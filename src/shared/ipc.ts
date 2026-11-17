@@ -25,8 +25,23 @@ export interface PingTag {
 }
 
 /** main → overlay renderer messages. Points are CSS pixels inside that overlay. */
+/**
+ * An emote being added, shown at the size it will have while its size or trim dialog is open: the image once (`bytes`, a
+ * GIF, WebP, PNG or JPEG), then only its new size as the slider moves.
+ */
+export interface ArtPreview {
+  bytes?: Uint8Array;
+  w: number;
+  h: number;
+}
+
 export interface OverlayEvents {
   'overlay:settings': OverlaySettings;
+  /**
+   * The size preview, centred on (x, y) in the overlay; `over` when it covers the settings window, which then shows
+   * through. Null takes it away.
+   */
+  'preview:art': (ArtPreview & Point & { over: boolean }) | null;
   /** `wheel` names the wheel the gesture belongs to; missing means 'ping' (the site demo leaves it out). */
   'wheel:open': Point & { wheel?: WheelKind };
   'wheel:move': Point & { wheel?: WheelKind };
@@ -91,7 +106,7 @@ export type OverlayChannel = keyof OverlayEvents;
 
 export const OVERLAY_CHANNELS: readonly OverlayChannel[] = [
   'overlay:settings', 'wheel:open', 'wheel:move', 'wheel:release', 'wheel:cancel', 'ping:spawn', 'ping:unkeep', 'emote:spawn', 'emote:encode',
-  'emote:encodeAnim', 'emote:clear', 'toast:show', 'text:spawn', 'mate:clear', 'mate:fade', 'mate:ticket', 'mate:said', 'mate:glow',
+  'emote:encodeAnim', 'emote:clear', 'preview:art', 'toast:show', 'text:spawn', 'mate:clear', 'mate:fade', 'mate:ticket', 'mate:said', 'mate:glow',
 ];
 
 /** Larger than any screen in CSS px: a box or a point past these is not one the overlay should draw. */
@@ -274,6 +289,8 @@ export interface SettingsApi {
   previewPing(id: PingId): Promise<void>;
   /** Plays the emote in the middle of the primary display, without sharing it. */
   previewEmote(ref: EmoteRef): Promise<void>;
+  /** Shows an emote being added at the size it will have, beside the settings window; null takes it away. */
+  previewArt(art: ArtPreview | null): Promise<void>;
   /** Saves an image prepared by the settings window and adds it to the imported emotes. */
   importEmote(file: EmoteFile): Promise<ImportResult>;
   /** Deletes an imported emote's files and entry; wheel slots that used it fall back. */

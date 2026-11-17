@@ -100,7 +100,10 @@ async function saveClip(t: Strings, result: ClipResult, file: string): Promise<s
 /** The import waiting on a dialog: a video in the trim dialog, or a prepared image in the size dialog. */
 type Pending =
   | { kind: 'clip'; file: File; done(result: ClipResult): void }
-  | { kind: 'size'; file: EmoteFile; done(result: EmoteFile | null): void };
+  | { kind: 'size'; key: number; file: EmoteFile; done(result: EmoteFile | null): void };
+
+/** Each size dialog's key: one dialog per image, never a reused one, so each starts at 100% with its own preview. */
+let sizeDialogs = 0;
 
 /**
  * Add image… and what an import has to say, under the pool. Files from the button or dropped on the pool are imported one
@@ -122,6 +125,7 @@ function useImports(t: Strings) {
   }));
   const size = (file: EmoteFile): Promise<EmoteFile | null> => new Promise((resolve) => setPending({
     kind: 'size',
+    key: ++sizeDialogs,
     file,
     done: (result) => {
       setPending(null);
@@ -278,7 +282,7 @@ export function EmoteSection({ settings: s, update, lengthUnit }: { settings: Se
         onChange={(patch) => void update(emotePatch(patch))} onPreview={(ref) => void api.previewEmote(ref)} />
       {pending?.kind === 'clip'
         ? <ClipTrimmer key={`${pending.file.name}:${pending.file.lastModified}`} file={pending.file} onDone={pending.done} /> : null}
-      {pending?.kind === 'size' ? <EmoteSizer file={pending.file} onDone={pending.done} /> : null}
+      {pending?.kind === 'size' ? <EmoteSizer key={pending.key} file={pending.file} onDone={pending.done} /> : null}
     </>
   );
 }

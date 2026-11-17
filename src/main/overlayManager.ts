@@ -3,7 +3,7 @@ import { EventEmitter } from 'node:events';
 import { EMOTE_DURATION_S, isEmoteRefShape, type EmoteArt, type EmoteRef } from '../shared/emotes';
 import {
   OVERLAY_ASSETS, OVERLAY_EMOTED, OVERLAY_IDLE, OVERLAY_PINGED, OVERLAY_SHARE, OVERLAY_SHARE_ANIM, type OverlayChannel, type OverlayEvents,
-  type PingTag,
+  type ArtPreview, type PingTag,
 } from '../shared/ipc';
 import { WHEEL, pickSlice } from '../shared/geometry';
 import { isPingId, type PingId } from '../shared/pings';
@@ -13,6 +13,7 @@ import type { Rect } from '../shared/teammate/coords';
 import {
   displayAtPhysical, physicalBoxToLocal, physicalToDip, physicalToLocal, type DisplayMap, type LocalPoint,
 } from './coords';
+import { artPreviewSpot } from './artPreviewSpot';
 import { numberDisplays, type NumberedDisplay } from './displayNumbers';
 import { IS_LINUX, IS_MAC, loadPage, preloadPath } from './paths';
 
@@ -110,6 +111,9 @@ export class OverlayManager extends EventEmitter {
   private captureExcluded = false;
   /** Overlays whose page last said it has nothing on it, parked off their displays (Windows only). */
   private readonly idleWindows = new WeakSet<BrowserWindow>();
+  /** The display showing the size preview of an emote being added, and its image. */
+  private previewDisplay: number | null = null;
+  private previewBytes: Uint8Array | null = null;
 
   /** `resolveArt` says what an emote looks like: `remote` is true for a room member's, whose files may be missing here. */
   constructor(private settings: OverlaySettings, private readonly resolveArt: (ref: EmoteRef, remote: boolean) => EmoteArt) {
@@ -328,6 +332,29 @@ export class OverlayManager extends EventEmitter {
   primaryDip(): { x: number; y: number } {
     const b = screen.getPrimaryDisplay().bounds;
     return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  }
+
+  /**
+   * Shows the emote being added at the size it will have, on the display of the settings window (`near`, its bounds) and
+   * beside it where there is room (artPreviewSpot). The image comes once and is kept here, so it can follow the window
+   * to another display.
+   */
+  showArtPreview(art: ArtPreview, near: Rectangle | null): void {
+    if (art.bytes) this.previewBytes = art.bytes;
+    const d = near ? screen.getDisplayMatching(near) : screen.getPrimaryDisplay();
+    const spot = artPreviewSpot(d.workArea, near, art.w, art.h);
+    const moved = d.id !== this.previewDisplay;
+    if (moved && this.previewDisplay !== null) this.send(this.previewDisplay, 'preview:art', null);
+    this.previewDisplay = d.id;
+    const bytes = moved && this.previewBytes ? { bytes: this.previewBytes } : art.bytes ? { bytes: art.bytes } : {};
+    this.send(d.id, 'preview:art', { ...bytes, w: art.w, h: art.h, x: spot.x - d.bounds.x, y: spot.y - d.bounds.y, over: spot.over });
+  }
+
+  /** Takes the size preview away: its dialog closed, or the settings window did. */
+  hideArtPreview(): void {
+    if (this.previewDisplay !== null) this.send(this.previewDisplay, 'preview:art', null);
+    this.previewDisplay = null;
+    this.previewBytes = null;
   }
 
   /** Shows an emote in the middle of the main display, without sharing it (the settings page's preview). */

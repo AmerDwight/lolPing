@@ -4,6 +4,7 @@ import {
 import { useEffect, useRef, useState } from 'react';
 import { EMOTE_SCALE_MAX, EMOTE_SCALE_MIN, EMOTE_SCALE_STEP, scaledArtSize, type EmoteFile } from '../../../shared/emotes';
 import { imageSize, sniffImage } from '../../../shared/imageSniff';
+import { api } from '../api';
 import { useText } from '../text';
 
 /**
@@ -28,7 +29,7 @@ export function SizeSlider({ scale, width, height, disabled, onChange }: {
 
 /**
  * The dialog an added image opens before it becomes an emote: the image at the size it will show, for us and for room
- * members, and the slider that sets it. `onDone` gets the file with the chosen scale, or null when cancelled, and
+ * members, here and on the desktop beside the window, and the slider that sets it. `onDone` gets the file with the chosen scale, or null when cancelled, and
  * nothing is saved until then.
  */
 export function EmoteSizer({ file, onDone }: { file: EmoteFile; onDone(result: EmoteFile | null): void }) {
@@ -61,13 +62,21 @@ export function EmoteSizer({ file, onDone }: { file: EmoteFile; onDone(result: E
   const shown = scaledArtSize(own.width, own.height, scale);
   const fit = room ? Math.min(1, room.w / shown.w, room.h / shown.h) : 1;
 
+  // The same image on the desktop, at its real size, beside this window: the image once, then each new size.
+  const sentImage = useRef(false);
+  useEffect(() => {
+    void api.previewArt({ ...(sentImage.current ? {} : { bytes: art.slice() }), w: shown.w, h: shown.h });
+    sentImage.current = true;
+  }, [art, shown.w, shown.h]);
+  useEffect(() => () => void api.previewArt(null), []);
+
   return (
     <Dialog open modalType="modal" onOpenChange={(_, d) => !d.open && onDone(null)}>
       <DialogSurface style={{ width: 'min(640px, calc(100vw - 32px))', maxWidth: 'none' }}>
         <DialogBody>
           <DialogTitle>{t.sizeTitle(file.name)}</DialogTitle>
           <DialogContent className="sizeBody">
-            <span className="desc">{t.sizeDesc}</span>
+            <span className="desc">{t.sizeDesc} {t.sizeOnDesktop}</span>
             <div ref={stage} className="sizeStage">
               {url ? <img src={url} alt="" style={{ width: shown.w * fit, height: shown.h * fit }} /> : null}
             </div>

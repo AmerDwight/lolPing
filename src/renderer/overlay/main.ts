@@ -184,6 +184,38 @@ window.overlay.on('emote:encode', (p) => {
     window.overlay.reportShare(p.id, share);
   })();
 });
+// The emote being added in the settings window, at the size it will have while its dialog is open. It sits in the emote
+// layer, so the overlay counts as busy and shows, and has no effect: it is only there to be looked at.
+let artPreview: { root: HTMLDivElement; img: HTMLImageElement; url: string | null } | null = null;
+window.overlay.on('preview:art', (p) => {
+  if (!p) {
+    if (artPreview?.url) URL.revokeObjectURL(artPreview.url);
+    artPreview?.root.remove();
+    artPreview = null;
+    return;
+  }
+  if (!artPreview) {
+    const root = document.createElement('div');
+    root.className = 'artPreview';
+    const img = document.createElement('img');
+    img.alt = '';
+    root.append(img);
+    emoteLayer.append(root);
+    artPreview = { root, img, url: null };
+  }
+  if (p.bytes) {
+    if (artPreview.url) URL.revokeObjectURL(artPreview.url);
+    artPreview.url = URL.createObjectURL(new Blob([p.bytes.slice()]));
+    artPreview.img.src = artPreview.url;
+  }
+  const { root } = artPreview;
+  root.style.left = `${p.x - p.w / 2}px`;
+  root.style.top = `${p.y - p.h / 2}px`;
+  root.style.width = `${p.w}px`;
+  root.style.height = `${p.h}px`;
+  root.classList.toggle('over', p.over);
+});
+
 // And a moving emote added before animations travelled, for the small copy room members get.
 window.overlay.on('emote:encodeAnim', (p) => {
   const type = sniffImage(p.anim);

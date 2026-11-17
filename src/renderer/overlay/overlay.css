@@ -101,6 +101,11 @@ html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background:
 
 /* ---------- emotes (the box and the 13 effect envelopes live in shared/emoteFx.css, shared with the effect picker) ---------- */
 .emote .tag { top: calc(var(--h) * 0.5 + 8px); }
+/* The emote being added, at its real size while its size or trim dialog is open. Over the settings window it lets the
+   dialog show through. */
+.artPreview { position: absolute; pointer-events: none; }
+.artPreview img { display: block; width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 0 8px #fff8); }
+.artPreview.over { opacity: 0.55; }
 /* A kept bundled emote holds its round wheel icon once the animation is over. */
 .emote .still {
   position: absolute; left: calc(var(--size) * -0.5); top: calc(var(--size) * -0.5); width: var(--size); height: var(--size);

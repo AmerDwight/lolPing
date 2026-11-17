@@ -1,8 +1,11 @@
 import { globalShortcut, ipcMain, shell } from 'electron';
-import { isCustomRef, isEmoteFx, isEmoteRefShape, type CustomEmote, type EmoteRef, type ImportResult, type SoundResult } from '../shared/emotes';
+import {
+  ANIM_MAX_BYTES, ART_MAX_PX, isCustomRef, isEmoteFx, isEmoteRefShape, type CustomEmote, type EmoteRef, type ImportResult, type SoundResult,
+} from '../shared/emotes';
+import { sniffImage } from '../shared/imageSniff';
 import type { Strings } from '../shared/i18n';
 import {
-  SETTINGS_CH, TEAMMATE_HISTORY_OPS, type About, type AppStatus, type CheckAgentResult, type CheckKeyResult,
+  SETTINGS_CH, TEAMMATE_HISTORY_OPS, type About, type AppStatus, type ArtPreview, type CheckAgentResult, type CheckKeyResult,
   type SecretResult, type SetSettingsResult, type TeammateHistoryOp, type TeammateStatus, type UsageMonth,
 } from '../shared/ipc';
 import { hotkeyLabel, hotkeyToAccelerator, type Hotkey } from '../shared/keys';
@@ -24,6 +27,20 @@ const PROJECT_URL = 'https://github.com/darrenprx/lolPing';
 /** Where "What's new" goes when no update is known. */
 export const LATEST_RELEASE_URL = `${PROJECT_URL}/releases/latest`;
 
+/**
+ * A size preview from the settings window, checked: whole sides of 1 to ART_MAX_PX, and, when it carries the image, an
+ * image of at most ANIM_MAX_BYTES. Null for anything else.
+ */
+export function artPreviewFrom(raw: unknown): ArtPreview | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const { bytes, w, h } = raw as Record<string, unknown>;
+  const side = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= ART_MAX_PX;
+  if (!side(w) || !side(h)) return null;
+  if (bytes === undefined) return { w, h };
+  if (!(bytes instanceof Uint8Array) || bytes.length > ANIM_MAX_BYTES || sniffImage(bytes) === null) return null;
+  return { bytes, w, h };
+}
+
 export interface SettingsIpcDeps {
   store: SettingsStore;
   /** Imported emotes' files. Only the import, remove, sound and fx handlers change `customEmotes`. */
@@ -32,6 +49,8 @@ export interface SettingsIpcDeps {
   setEnabled(on: boolean): void;
   preview(id: PingId): void;
   previewEmote(ref: EmoteRef): void;
+  /** Shows, resizes or (with null) takes away the size preview of an emote being added. */
+  previewArt(art: ArtPreview | null): void;
   about(): About;
   retryHelper(): void;
   setCapturing(on: boolean): void;
@@ -146,6 +165,13 @@ export function registerSettingsIpc(d: SettingsIpcDeps): void {
   ipcMain.handle(SETTINGS_CH.preview, (_e, id: unknown) => {
     const p = typeof id === 'string' ? pingById(id) : undefined;
     if (p) d.preview(p.id);
+  });
+  ipcMain.handle(SETTINGS_CH.previewArt, (_e, raw: unknown) => {
+    if (raw === null) d.previewArt(null);
+    else {
+      const art = artPreviewFrom(raw);
+      if (art) d.previewArt(art);
+    }
   });
   ipcMain.handle(SETTINGS_CH.previewEmote, (_e, ref: unknown) => {
     if (isEmoteRefShape(ref)) d.previewEmote(ref);

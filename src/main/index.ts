@@ -1245,6 +1245,11 @@ function start(): void {
     setEnabled,
     preview: (id) => overlays.previewPing(id),
     previewEmote: (ref) => overlays.previewEmote(ref),
+    previewArt: (art) => {
+      const w = settingsWindow();
+      if (art) overlays.showArtPreview(art, w && !w.isDestroyed() ? w.getBounds() : null);
+      else overlays.hideArtPreview();
+    },
     about,
     retryHelper: startHelper,
     setCapturing: (on) => {
@@ -1333,6 +1338,7 @@ function start(): void {
   });
   // The page can't report that it went away mid-capture (window closed, renderer crashed): release the suspend here.
   onSettingsWindowGone(() => {
+    overlays.hideArtPreview(); // its dialog went with it
     if (!capturing) return;
     capturing = false;
     syncSuspended();

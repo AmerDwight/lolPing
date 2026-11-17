@@ -3,7 +3,8 @@ import {
 } from '@fluentui/react-components';
 import { Pause24Regular, Play24Regular } from '@fluentui/react-icons';
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
-import type { ImportError } from '../../../shared/emotes';
+import { scaledArtSize, type ImportError } from '../../../shared/emotes';
+import { api } from '../api';
 import { clipArtSize, dragClip, dragEnd, dragStart, formatClock, initialRange, type ClipRange } from '../clipRange';
 import { useText } from '../text';
 import { decodeVideoSound, loadVideo, prepareClip, type LoadedVideo, type PreparedClip } from '../videoEmote';
@@ -15,6 +16,8 @@ type Drag = { kind: 'start' | 'end' | 'clip'; from: number; range: ClipRange };
 
 /** Arrow keys move an edge by this much, with Shift by a second. */
 const STEP_S = 0.1;
+/** How often the desktop preview takes the preview's current frame: enough to see the clip move, at its real size. */
+const DESKTOP_FRAME_MS = 250;
 
 /**
  * The trim dialog a picked video opens: a preview that loops the chosen part, a track with its two edges and the part
@@ -87,6 +90,36 @@ export function ClipTrimmer({ file, onDone }: { file: File; onDone(result: ClipR
     else el.pause();
   }, [playing, video, working]);
 
+  // The clip on the desktop beside this window, at the size it will have: the preview's frame a few times a second, and
+  // each new size as the slider moves. Gone with the dialog.
+  const base = video ? clipArtSize(video.width, video.height) : null;
+  const shown = base ? scaledArtSize(base.width, base.height, scale) : null;
+  const shownNow = useRef(shown);
+  shownNow.current = shown;
+  useEffect(() => {
+    if (shown) void api.previewArt({ w: shown.w, h: shown.h });
+  }, [shown?.w, shown?.h]);
+  useEffect(() => {
+    const el = preview.current;
+    if (!el || !video) return;
+    const size = clipArtSize(video.width, video.height);
+    const canvas = new OffscreenCanvas(size.width, size.height);
+    const ctx = canvas.getContext('2d', { alpha: false });
+    let busy = false;
+    const timer = setInterval(() => {
+      const now = shownNow.current;
+      if (busy || !ctx || !now || el.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
+      busy = true;
+      ctx.drawImage(el, 0, 0, size.width, size.height);
+      void canvas.convertToBlob({ type: 'image/webp', quality: 0.75 })
+        .then(async (blob) => api.previewArt({ bytes: new Uint8Array(await blob.arrayBuffer()), w: now.w, h: now.h }))
+        .catch(() => undefined)
+        .finally(() => (busy = false));
+    }, DESKTOP_FRAME_MS);
+    return () => clearInterval(timer);
+  }, [video]);
+  useEffect(() => () => void api.previewArt(null), []);
+
   if (!video) return null; // still opening: an error closes the dialog before it ever shows
 
   const duration = video.duration;
@@ -157,7 +190,7 @@ export function ClipTrimmer({ file, onDone }: { file: File; onDone(result: ClipR
         <DialogBody>
           <DialogTitle>{t.clipTitle}</DialogTitle>
           <DialogContent className="clipBody">
-            <span className="desc">{t.clipDesc}</span>
+            <span className="desc">{t.clipDesc} {t.sizeOnDesktop}</span>
             <video ref={preview} className="clipPreview" src={video.url} muted={!withSound} playsInline
               onClick={() => setPlaying((p) => !p)} />
             <div className="clipControls">
