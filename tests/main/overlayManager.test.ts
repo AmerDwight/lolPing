@@ -487,6 +487,15 @@ describe('OverlayManager remote and preview emotes', () => {
     expect((sent(0)[2][1] as { art: EmoteArt }).art).toEqual({ kind: 'placeholder' });
   });
 
+  it('moves a room member’s emote with their shared animation once it has arrived, even before the still', () => {
+    const anim = `lolping://emotes/${'b'.repeat(32)}.anim`;
+    const tag = { name: 'Bob', color: 2 };
+    resolveArt.mockClear();
+    mgr.spawnRemoteEmote({ displayId: 1, x: 1, y: 1, ref: `c:${'a'.repeat(32)}`, fx: 3, anim, w: 300, h: 200, peer: 'peer-1', tag });
+    expect(sent(0)[0][1]).toMatchObject({ art: { kind: 'custom', url: anim, animated: true, fx: 3, w: 300, h: 200 } });
+    expect(resolveArt).not.toHaveBeenCalled();
+  });
+
   it('plays the sender’s shared sound with their custom emote, over ours for the same image, and none with a placeholder', () => {
     const url = `lolping://emotes/${'a'.repeat(32)}.webp`;
     const theirs = `lolping://emotes/${'b'.repeat(32)}.ogg`;

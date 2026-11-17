@@ -4,7 +4,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { checkStill } from '../../src/main/emoteLibrary';
+import { checkSharedAnim, checkStill } from '../../src/main/emoteLibrary';
 import { EmoteTransfer } from '../../src/main/emoteTransfer';
 import { LanTransport } from '../../src/main/lanTransport';
 import { RelayTransport } from '../../src/main/relayTransport';
@@ -32,6 +32,7 @@ const { values, positionals } = parseArgs({
     relay: { type: 'boolean', default: false }, // through the public relays instead of the LAN
     emotes: { type: 'boolean', default: false }, // also send emotes, alternating with the pings
     image: { type: 'string' }, // a still .webp this peer owns: it announces and serves it, and its custom emote uses it
+    anim: { type: 'string' }, // with --image: a shared animation .webp for it, announced in an anims message and served
     app: { type: 'string', default: 'room-peer' }, // the app version it announces; 0.5.2 or newer can see text and votes
     text: { type: 'string' }, // a room text line to send every 5 s
     alive: { type: 'boolean', default: false }, // an alive line about a random member every 7 s
@@ -46,7 +47,7 @@ const { values, positionals } = parseArgs({
 const parsed = parseRoomCode(positionals.join(' '));
 if (!parsed.ok) {
   console.error('usage: node tools/room-peer/run.mjs PING-XXXXX-XXXXX [--name Bot] [--color 0-7] [--rate 1] [--host 127.0.0.1] [--port 47475] [--display 1] [--relay] [--emotes] [--image still.webp]'
-    + ' [--app 0.5.2] [--text "hello"] [--alive] [--vote ff|ready] [--answer yes|no] [--nf text,votes] [--legacy] [--forge <peer id>]');
+    + ' [--anim share.webp] [--app 0.5.2] [--text "hello"] [--alive] [--vote ff|ready] [--answer yes|no] [--nf text,votes] [--legacy] [--forge <peer id>]');
   process.exit(1);
 }
 
@@ -91,6 +92,15 @@ if (image && checkStill(image) !== null) {
   process.exit(1);
 }
 const imageHash = image ? createHash('sha256').update(image).digest('hex').slice(0, 32) : null;
+// --anim: the copy of an animation that travels, as the app checks one that arrives.
+const anim = values.anim ? new Uint8Array(readFileSync(values.anim)) : null;
+if (anim && (!imageHash || checkSharedAnim(anim) !== null)) {
+  console.error(`--anim needs --image, and a moving WebP of at most 256 KB, 240 px, 100 frames and 5.2 s (${anim ? checkSharedAnim(anim) : ''})`);
+  process.exit(1);
+}
+const animHash = anim ? createHash('sha256').update(anim).digest('hex').slice(0, 32) : null;
+/** The presence, then the anims message naming --anim, as the app sends them. */
+const presences = (): Buffer[] => [presence(), ...(imageHash && animHash ? [packet({ t: 'anims', an: [[imageHash, animHash]] })] : [])];
 const presence = (): Buffer =>
   packet({ t: 'presence', proto: PROTOCOL_VERSION, app: values.app, name: values.name, color: Number(values.color), status: 'on',
     em: imageHash ? [imageHash] : [], nf, ...(identity ? { pk: identity.pk.toString('base64') } : {}) });
@@ -109,14 +119,15 @@ const names = new Map<string, string>(); // member peer ID → the name its pres
 const nameOf = (p: string): string => names.get(p) ?? p;
 const transfer = new EmoteTransfer({
   now: Date.now,
-  have: (h) => h === imageHash || received.has(h),
-  blob: (h, kind) => (kind === 'still' && h === imageHash ? image : null),
+  have: (h) => h === imageHash || h === animHash || received.has(h),
+  blob: (h, kind) => (kind === 'still' && h === imageHash ? image : kind === 'anim' && h === animHash ? anim : null),
   announced: () => (imageHash ? [imageHash] : []),
   announcedSounds: () => [],
+  announcedAnims: () => (animHash ? [animHash] : []),
   enabled: () => true,
-  put: (h) => {
+  put: (h, _bytes, kind) => {
     received.add(h);
-    console.log(`[in] still ${h} arrived and passed the hash and image checks`);
+    console.log(`[in] ${kind === 'anim' ? 'animation' : kind} ${h} arrived and passed the hash and ${kind === 'still' ? 'image' : kind} checks`);
   },
   routeOf: (p) => (values.relay ? 'shared' : lanKeys.has(p) ? 'lan' : null),
   sendToLan: (p, body) => {
@@ -161,9 +172,14 @@ transport.on('packet', (from: string, data: Uint8Array) => {
   else if (msg.t === 'presence') {
     console.log(`[in] presence: ${msg.name} (${msg.status})${msg.em.length ? `, announces ${msg.em.join(', ')}` : ''}`);
     // Answer a new member straight away, as the app does: a second room-peer on another port hears no broadcast.
-    if (!values.relay && !answered.has(msg.peer)) transport.sendTo(from, presence());
+    if (!values.relay && !answered.has(msg.peer)) for (const p of presences()) transport.sendTo(from, p);
     answered.add(msg.peer);
-    transfer.announced(msg.peer, msg.em);
+    transfer.announced(msg.peer, msg.em, msg.sn);
+  } else if (msg.t === 'anims') {
+    console.log(`[in] anims: ${msg.an.map(([still, anim]) => `${still} moves as ${anim}`).join(', ')}`);
+    transfer.announcedAnims(msg.peer, msg.an);
+  } else if (msg.t === 'blob') {
+    transfer.onBlob(msg);
   } else {
     console.log(`[in] bye from ${msg.peer}`);
     transfer.memberGone(msg.peer);
@@ -171,9 +187,12 @@ transport.on('packet', (from: string, data: Uint8Array) => {
 });
 transport.start(keys);
 
-setInterval(() => transport.broadcast(presence()), values.relay ? 10_000 : 2000);
-if (values.relay) transport.on('linkUp', () => transport.broadcast(presence())); // each relay as it comes up
-else transport.once('status', () => transport.broadcast(presence()));
+const announce = (): void => {
+  for (const p of presences()) transport.broadcast(p);
+};
+setInterval(announce, values.relay ? 10_000 : 2000);
+if (values.relay) transport.on('linkUp', announce); // each relay as it comes up
+else transport.once('status', announce);
 let rate = Number(values.rate);
 if (values.relay && rate > RELAY_PING_RATE) {
   console.log(`[relay] --rate ${rate} is more than the relays should get; using ${RELAY_PING_RATE}`);

@@ -2,7 +2,8 @@ import { BrowserWindow, ipcMain, screen, type Display, type Rectangle, type WebC
 import { EventEmitter } from 'node:events';
 import { EMOTE_DURATION_S, isEmoteRefShape, type EmoteArt, type EmoteRef } from '../shared/emotes';
 import {
-  OVERLAY_ASSETS, OVERLAY_EMOTED, OVERLAY_IDLE, OVERLAY_PINGED, OVERLAY_SHARE, type OverlayChannel, type OverlayEvents, type PingTag,
+  OVERLAY_ASSETS, OVERLAY_EMOTED, OVERLAY_IDLE, OVERLAY_PINGED, OVERLAY_SHARE, OVERLAY_SHARE_ANIM, type OverlayChannel, type OverlayEvents,
+  type PingTag,
 } from '../shared/ipc';
 import { WHEEL, pickSlice } from '../shared/geometry';
 import { isPingId, type PingId } from '../shared/pings';
@@ -137,11 +138,13 @@ export class OverlayManager extends EventEmitter {
       // The wheel's own overlay already shows it. Another display may still hold an earlier one of ours.
       this.clearElsewhere(displayId, 'self');
     });
-    ipcMain.on(OVERLAY_SHARE, (event, raw: unknown) => {
-      const p = raw as { id?: unknown; share?: unknown } | null;
-      if (!p || !isEmoteRefShape(p.id) || this.displayOf(event.sender) === undefined) return;
-      this.emit('share', { id: p.id, share: p.share instanceof Uint8Array ? p.share : null });
-    });
+    for (const [channel, name] of [[OVERLAY_SHARE, 'share'], [OVERLAY_SHARE_ANIM, 'shareAnim']] as const) {
+      ipcMain.on(channel, (event, raw: unknown) => {
+        const p = raw as { id?: unknown; share?: unknown } | null;
+        if (!p || !isEmoteRefShape(p.id) || this.displayOf(event.sender) === undefined) return;
+        this.emit(name, { id: p.id, share: p.share instanceof Uint8Array ? p.share : null });
+      });
+    }
     ipcMain.on(OVERLAY_IDLE, (event, idle: unknown) => {
       // Screenshot tools on Windows take a shown overlay for a window over the whole display (#127): park an empty one.
       if (IS_MAC || IS_LINUX || typeof idle !== 'boolean') return;
@@ -335,13 +338,14 @@ export class OverlayManager extends EventEmitter {
 
   /**
    * A room member's emote, already mapped onto one of our displays. It replaces their earlier one, whichever display that
-   * was on. `sound` is the URL of the sender's shared sound for it, when that has arrived.
+   * was on. `sound` and `anim` are the URLs of the sender's shared sound and animation for it, when they have arrived.
    */
   spawnRemoteEmote(p: {
-    displayId: number; x: number; y: number; ref: EmoteRef; fx?: number; w?: number; h?: number; du?: number; sound?: string; peer: string;
-    tag: PingTag;
+    displayId: number; x: number; y: number; ref: EmoteRef; fx?: number; w?: number; h?: number; du?: number; sound?: string;
+    anim?: string; peer: string; tag: PingTag;
   }): void {
-    const art = this.resolveArt(p.ref, true);
+    // The sender's shared animation, once it has arrived, moves in place of the still.
+    const art: EmoteArt = p.anim ? { kind: 'custom', url: p.anim, animated: true, fx: 0 } : this.resolveArt(p.ref, true);
     // The effect, size, length and sound are the sender's choice, so theirs win — over a cached still's plain pop and
     // silence, and over what we picked if we happen to have the same image imported. An image we can't show plays no
     // sound either. Without a size from the sender it fills our emote size square.
@@ -373,6 +377,14 @@ export class OverlayManager extends EventEmitter {
     const w = this.windows.get(screen.getPrimaryDisplay().id);
     if (!w || w.isDestroyed() || w.webContents.isLoading()) return false;
     w.webContents.send('emote:encode', { id, sound });
+    return true;
+  }
+
+  /** The same for a moving emote's animation: the copy comes back as a 'shareAnim' event ({id, share | null}). */
+  encodeShareAnim(id: EmoteRef, anim: Uint8Array): boolean {
+    const w = this.windows.get(screen.getPrimaryDisplay().id);
+    if (!w || w.isDestroyed() || w.webContents.isLoading()) return false;
+    w.webContents.send('emote:encodeAnim', { id, anim });
     return true;
   }
 

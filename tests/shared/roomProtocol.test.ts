@@ -4,9 +4,10 @@ import {
   isTagColor, isTagRgb, nearestTagColor, readableTagRgb, sameTagRgb, TAG_COLORS, tagColorCss, tagHex, tagRgbFromHex, tagWire,
 } from '../../src/shared/roomColors';
 import {
-  clampNameInput, decodeMessage, decodeSigned, encodeMessage, joinSigned, splitSigned, isOlderThan, isVoteId, MAX_TEXT, sanitizeName, sanitizeText, validateMessage,
-  type AliveMsg, type BallotMsg, type BlobMsg, type ChunkMsg, type EmoteMsg, type PingMsg, type PresenceMsg, type RoomMessage, type TextMsg,
-  type VoteMsg, type WantMsg,
+  ANIM_BLOB_PARTS_MAX, ANIM_CHUNKS_MAX, clampNameInput, decodeMessage, decodeSigned, encodeMessage, joinSigned, splitSigned, isOlderThan,
+  isVoteId, MAX_TEXT, sanitizeName, sanitizeText, validateMessage,
+  type AliveMsg, type AnimsMsg, type BallotMsg, type BlobMsg, type ChunkMsg, type EmoteMsg, type PingMsg, type PresenceMsg, type RoomMessage,
+  type TextMsg, type VoteMsg, type WantMsg,
 } from '../../src/shared/roomProtocol';
 
 const base = { peer: '0123456789abcdef', seq: 4, ts: 1_780_000_000_000 };
@@ -327,10 +328,10 @@ describe('want and chunk messages', () => {
     ['hash upper-case', { ...want, h: hash.toUpperCase() }],
     ['need not an array', { ...want, need: 0 }],
     ['need over 64 entries', { ...want, need: Array(65).fill(0) }],
-    ['need index at the chunk max', { ...want, need: [22] }],
+    ['need index at the chunk max', { ...want, need: [350] }],
     ['need index negative', { ...want, need: [-1] }],
     ['chunk count 0', { ...chunk, n: 0 }],
-    ['chunk count 23', { ...chunk, n: 23 }],
+    ['chunk count 351', { ...chunk, n: 351 }],
     ['index at the count', { ...chunk, i: 22 }],
     ['index above the count', { ...chunk, n: 3, i: 3 }],
     ['base64 over 1000 characters', { ...chunk, b: 'QQ'.repeat(501) }],
@@ -355,7 +356,7 @@ describe('want and chunk messages', () => {
 
   it.each([
     ['part count 0', { n: 0 }],
-    ['part count 4', { n: 4 }],
+    ['part count 45', { n: 45 }],
     ['index at the count', { i: 3 }],
     ['hash upper-case', { h: hash.toUpperCase() }],
     ['base64 over 8000 characters', { b: 'QQ'.repeat(4001) }],
@@ -369,6 +370,44 @@ describe('want and chunk messages', () => {
     expect(validateMessage({ ...want, need: [] })).toMatchObject({ need: [] });
     expect(validateMessage(chunk)).toEqual(chunk);
     expect(validateMessage({ ...want, need: [21] })).toMatchObject({ need: [21] }); // a shared sound's last chunk
+  });
+
+  it('takes the part counts a 256 KB shared animation needs: 350 chunks or 44 blob parts', () => {
+    expect(ANIM_CHUNKS_MAX).toBe(350);
+    expect(ANIM_BLOB_PARTS_MAX).toBe(44);
+    expect(validateMessage({ ...chunk, n: 350, i: 349 })).toMatchObject({ n: 350, i: 349 });
+    expect(validateMessage({ ...want, need: [349] })).toMatchObject({ need: [349] });
+    expect(validateMessage({ ...base, t: 'blob', h: hash, i: 43, n: 44, b: 'QUJD' })).toMatchObject({ n: 44 });
+  });
+});
+
+describe('anims messages', () => {
+  const a = '0123456789abcdef0123456789abcdef';
+  const b = 'fedcba9876543210fedcba9876543210';
+  const c = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+  it('round-trips the [still, animation] pairs', () => {
+    const m: AnimsMsg = { ...base, t: 'anims', an: [[a, b], [c, a]] };
+    expect(validateMessage(m)).toEqual(m);
+    expect(decodeMessage(encodeMessage(m))).toEqual(m);
+  });
+
+  it('drops malformed pairs and a still that comes twice, and keeps at most 9', () => {
+    const raw = { ...base, t: 'anims', an: [[a, b], [a, c], [a], [a, 'nope'], 'x', [c, b, a], [b, b.toUpperCase()], [c, b]] };
+    expect(validateMessage(raw)).toMatchObject({ an: [[a, b], [c, b]] });
+    const many = Array.from({ length: 12 }, (_, i) => [i.toString(16).padStart(32, '0'), b]);
+    expect((validateMessage({ ...base, t: 'anims', an: many }) as AnimsMsg).an).toHaveLength(9);
+  });
+
+  it('is no message at all with nothing usable in it', () => {
+    for (const an of [[], 'x', [[a]], undefined]) expect(validateMessage({ ...base, t: 'anims', an })).toBeNull();
+  });
+
+  it('fits a LAN packet with 9 pairs, signed', () => {
+    const many = Array.from({ length: 9 }, (_, i): [string, string] => [i.toString(16).padStart(32, '0'), b]);
+    const body = encodeMessage({ ...base, seq: Number.MAX_SAFE_INTEGER, t: 'anims', an: many });
+    const signed = new TextEncoder().encode(joinSigned(new TextDecoder().decode(body), 'A'.repeat(86) + '=='));
+    expect(seal(Buffer.alloc(32), signed).length).toBeLessThanOrEqual(1200);
   });
 });
 

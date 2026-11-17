@@ -6,12 +6,18 @@ import { renameWithRetry } from './settingsStore';
 /** At most this many stills and this many bytes of friends' emotes are kept; the rest is evicted least recently used first. */
 export const CACHE_MAX_FILES = 200;
 export const CACHE_MAX_BYTES = 4 * 1024 * 1024;
+/** Friends' shared animations are larger: their own cache keeps fewer, in more bytes. */
+export const ANIM_CACHE_MAX_FILES = 60;
+export const ANIM_CACHE_MAX_BYTES = 16 * 1024 * 1024;
+
+export type CacheExt = 'webp' | 'ogg' | 'anim.webp';
 /** A crashed put leaves a `.tmp` behind; a live one owns its file for milliseconds, so only tmp this old is swept. */
 const STALE_TMP_MS = 5 * 60_000;
 
 /**
- * Owns the files of one type in `<settings folder>/emote-cache/`: verified stills (`.webp`) or shared sounds (`.ogg`) that
- * arrived over a room, capped, evicted by last use. Each type has its own cache and caps over the same folder.
+ * Owns the files of one type in `<settings folder>/emote-cache/`: verified stills (`.webp`), shared sounds (`.ogg`) or
+ * shared animations (`.anim.webp`) that arrived over a room, capped, evicted by last use. Each type has its own cache and
+ * caps over the same folder.
  */
 export class EmoteCache {
   readonly dir: string;
@@ -25,9 +31,12 @@ export class EmoteCache {
 
   private readonly nameRe: RegExp;
 
-  constructor(dir: string, private readonly now: () => number, private readonly ext: 'webp' | 'ogg' = 'webp') {
+  constructor(
+    dir: string, private readonly now: () => number, private readonly ext: CacheExt = 'webp',
+    private readonly caps = { files: CACHE_MAX_FILES, bytes: CACHE_MAX_BYTES },
+  ) {
     this.dir = dir;
-    this.nameRe = new RegExp(`^([0-9a-f]{32})\\.${ext}$`);
+    this.nameRe = new RegExp(`^([0-9a-f]{32})\\.${ext.replace('.', '\\.')}$`);
   }
 
   /** Reads what earlier sessions left behind. Run once at launch, before anything asks has(). */
@@ -77,7 +86,8 @@ export class EmoteCache {
     const entries = new Map<string, { size: number; at: number }>();
     for (const name of names) {
       const m = this.nameRe.exec(name);
-      const tmp = name.endsWith(`.${this.ext}.tmp`); // the other type's cache sweeps its own
+      // The other types' caches sweep their own; a still's `.webp.tmp` ending is also an animation's, so those are told apart.
+      const tmp = name.endsWith(`.${this.ext}.tmp`) && (this.ext !== 'webp' || !name.endsWith('.anim.webp.tmp'));
       if (!m && !tmp) continue;
       try {
         const s = await stat(join(this.dir, name));
@@ -96,13 +106,13 @@ export class EmoteCache {
     this.entries.set(hash, { size, at: this.now() });
   }
 
-  /** Keeps at most CACHE_MAX_FILES stills and CACHE_MAX_BYTES, evicting the least recently used. */
+  /** Keeps at most its caps' files and bytes, evicting the least recently used. */
   private async evict(): Promise<void> {
     const byUse = [...this.entries].reverse().sort((a, b) => b[1].at - a[1].at);
     let files = 0;
     let bytes = 0;
     for (const [hash, e] of byUse) {
-      if (files < CACHE_MAX_FILES && bytes + e.size <= CACHE_MAX_BYTES) {
+      if (files < this.caps.files && bytes + e.size <= this.caps.bytes) {
         files++;
         bytes += e.size;
         continue;

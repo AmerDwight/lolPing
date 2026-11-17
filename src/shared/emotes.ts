@@ -23,6 +23,8 @@ export interface CustomEmote {
   h?: number;
   /** Made from a video: the clip's length in ms, which is how long it stays on screen when that is longer than usual. */
   clip?: number;
+  /** The hash of its `.share.webp`: a small copy of the animation, which room members fetch and play. Only with `animated`. */
+  shareAnim?: string;
 }
 
 /** A stored effect: an integer within EMOTE_FX_VARIANTS. Anything else means the plain pop. */
@@ -41,7 +43,8 @@ export type EmoteArt =
   }
   | { kind: 'placeholder' };
 
-export type ImportError = 'type' | 'size' | 'animSize' | 'detail' | 'full' | 'duplicate' | 'disk';
+/** Why an import failed. The video ones come from the settings window only: main never sees a video. */
+export type ImportError = 'type' | 'size' | 'animSize' | 'detail' | 'full' | 'duplicate' | 'disk' | 'videoType' | 'videoSize' | 'videoShort';
 /**
  * What the settings renderer sends the main process when importing: the 160 px still and the art at full size, which is
  * the original animation, a video's frames, or the image itself as a WebP of up to ART_MAX_SIDE. An image the window
@@ -53,6 +56,8 @@ export interface EmoteFile {
   anim?: Uint8Array;
   /** The clip's length in ms, for art made from a video. */
   clip?: number;
+  /** The small copy of a moving `anim` for room members (see SHARED_ANIM_MAX_BYTES), when the window could make one. */
+  shareAnim?: Uint8Array;
 }
 export type ImportResult = { ok: true; id: EmoteRef } | { ok: false; error: ImportError };
 export type SoundError = 'type' | 'size' | 'long' | 'disk';
@@ -77,6 +82,8 @@ export const ART_MAX_PX = 2048;
 /** An imported emote's sound: OGG, MP3 or WAV, at most this many bytes and seconds. */
 export const SOUND_MAX_BYTES = 1_048_576;
 export const SOUND_MAX_S = 5;
+/** The largest video the settings window opens to cut a clip from. */
+export const VIDEO_MAX_BYTES = 104_857_600;
 /** A video emote is a clip of at least CLIP_MIN_S and at most CLIP_MAX_S, the longest sound an emote can have. */
 export const CLIP_MIN_S = 0.3;
 export const CLIP_MAX_S = SOUND_MAX_S;
@@ -84,6 +91,15 @@ export const CLIP_MAX_S = SOUND_MAX_S;
 export const SHARED_SOUND_MAX_BYTES = 16_384;
 /** A shared sound's packets may decode to this much: SOUND_MAX_S, the picker's slack, and the encoder's delay and padding. */
 export const SHARED_SOUND_MAX_S = SOUND_MAX_S + 0.2;
+/**
+ * The copy of a moving emote that travels through a room: an animated WebP of at most this many bytes (350 chunks), this
+ * many px on its longest side, frames and ms. It covers the first SHARED_SOUND_MAX_S of the animation, which is all an
+ * emote ever shows of it.
+ */
+export const SHARED_ANIM_MAX_BYTES = 262_144;
+export const SHARED_ANIM_SIDE = 240;
+export const SHARED_ANIM_MAX_FRAMES = 100;
+export const SHARED_ANIM_MAX_MS = SHARED_SOUND_MAX_S * 1000;
 /**
  * The signature effects a custom emote can play when it lands: 0 is the plain pop, then spin-in, bounce drop, flash
  * focus, pendulum swing and heartbeat. Which one an image plays is stored on its entry (`CustomEmote.fx`, picked by
@@ -119,6 +135,8 @@ export const customAnimUrl = (hash: string): string => `${CUSTOM_EMOTE_URL}${has
 export const customSoundUrl = (hash: string): string => `${CUSTOM_EMOTE_URL}${hash}.sound`;
 /** A room member's shared sound, by its own hash, from the cache. */
 export const sharedSoundUrl = (hash: string): string => `${CUSTOM_EMOTE_URL}${hash}.ogg`;
+/** A room member's shared animation, by its own hash, from the cache (main serves it as `.anim`, like our own art). */
+export const sharedAnimUrl = (hash: string): string => customAnimUrl(hash);
 
 /** Every bundled file that has to ship, relative to assets/. */
 export function allEmoteAssetFiles(): string[] {
@@ -172,6 +190,14 @@ export function announcedEmoteHashes(wheel: readonly EmoteRef[], centre: EmoteRe
     if (out.length >= ANNOUNCED_MAX) break;
   }
   return out;
+}
+
+/** For each announced hash that has a shared animation, the pair [its hash, the animation's hash], in the same order. */
+export function announcedEmoteAnims(hashes: readonly string[], custom: readonly CustomEmote[]): [string, string][] {
+  return hashes.flatMap((hash): [string, string][] => {
+    const share = custom.find((c) => c.id === `c:${hash}`)?.shareAnim;
+    return share ? [[hash, share]] : [];
+  });
 }
 
 /** For each announced hash, in the same order, the hash of that emote's shared sound, or '' when it has none. */

@@ -22,6 +22,9 @@ const api: OverlayApi = {
   reportShare() {
     // the site has no library to keep a copy in
   },
+  reportShareAnim() {
+    // nor for an animation
+  },
   reportIdle() {
     // the page is the overlay, so there is no window to hide
   },

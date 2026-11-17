@@ -50,6 +50,34 @@ describe('EmoteCache', () => {
     expect([soundsAgain.has(HASH(1)), soundsAgain.has(HASH(2))]).toEqual([true, true]);
   });
 
+  it('keeps shared animations as .anim.webp under caps of their own, apart from the stills', async () => {
+    const anims = new EmoteCache(dir, () => clock, 'anim.webp', { files: 2, bytes: 1000 });
+    await cache.put(HASH(1), stillOf(1, 100));
+    expect(await anims.put(HASH(1), stillOf(2, 400))).toBe(true);
+    expect(await anims.put(HASH(2), stillOf(3, 400))).toBe(true);
+    expect(readdirSync(dir).sort()).toEqual([`${HASH(1)}.anim.webp`, `${HASH(1)}.webp`, `${HASH(2)}.anim.webp`]);
+    clock += 10;
+    expect(await anims.put(HASH(3), stillOf(4, 400))).toBe(true); // a third is past the file cap: the oldest goes
+    expect([anims.has(HASH(1)), anims.has(HASH(2)), anims.has(HASH(3))]).toEqual([false, true, true]);
+    expect(cache.has(HASH(1))).toBe(true); // the still under the same hash is another cache's
+
+    const stillsAgain = new EmoteCache(dir, () => clock);
+    await stillsAgain.present();
+    expect([stillsAgain.has(HASH(1)), stillsAgain.has(HASH(2))]).toEqual([true, false]); // an animation is not a still
+  });
+
+  it('leaves an animation\'s temp file to the animation cache when it sweeps', async () => {
+    mkdirSync(dir, { recursive: true });
+    const tmp = join(dir, `${HASH(1)}.anim.webp.tmp`);
+    writeFileSync(tmp, 'left by a crash');
+    const ago = new Date(Date.now() - 10 * 60_000);
+    utimesSync(tmp, ago, ago);
+    await cache.sweep();
+    expect(existsSync(tmp)).toBe(true);
+    await new EmoteCache(dir, () => clock, 'anim.webp').sweep();
+    expect(existsSync(tmp)).toBe(false);
+  });
+
   it('refuses a hash that is not 32 hex characters', async () => {
     expect(await cache.put('../escape', stillOf(1, 100))).toBe(false);
     expect(existsSync(dir)).toBe(false);

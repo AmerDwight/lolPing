@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { resolveEmoteFile } from '../../src/main/appProtocol';
-import { checkShared, EmoteLibrary, emoteFileFrom, resolveEmoteArt } from '../../src/main/emoteLibrary';
+import { checkShared, checkSharedAnim, EmoteLibrary, emoteFileFrom, resolveEmoteArt } from '../../src/main/emoteLibrary';
+import { muxWebpAnimation } from '../../src/shared/webpAnim';
 import { customAnimUrl, customStillUrl, SHARED_SOUND_MAX_BYTES, type CustomEmote, type EmoteFile } from '../../src/shared/emotes';
 import { opusSound } from './fixtures/opusSample';
 
@@ -54,6 +55,10 @@ const ogg = (total = 500): Uint8Array => padded(ascii('OggS'), total);
 const mp3 = (total = 500): Uint8Array => padded([...ascii('ID3'), 4, 0], total);
 
 const hashOf = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex').slice(0, 32);
+/** An 8 x 6 lossy WebP frame, as libwebp writes one, and a small moving copy for rooms made of `count` of them. */
+const FRAME = Uint8Array.from(Buffer.from('UklGRjYAAABXRUJQVlA4ICoAAACQAQCdASoIAAYAAsBMJaACdLoAA5gA/uwmX18AU9Uf/OJfyR+gXaAAAAA=', 'base64'));
+const shareAnim = (count = 3, ms = 100): Uint8Array =>
+  muxWebpAnimation(Array.from({ length: count }, () => ({ file: FRAME, ms })), 8, 6) as Uint8Array;
 const tempDir = (): string => mkdtempSync(join(tmpdir(), 'lolping-emotes-'));
 const files = (dir: string): string[] => (existsSync(dir) ? readdirSync(dir).sort() : []);
 const entry = (n: number): CustomEmote => ({ id: `c:${n.toString(16).padStart(32, '0')}`, name: `e${n}`, animated: false });
@@ -313,6 +318,14 @@ describe('emoteFileFrom', () => {
     expect(emoteFileFrom({ name: 'x', still: Buffer.from(s) })).not.toBeNull(); // a Buffer is a Uint8Array
   });
 
+  it('keeps a copy for rooms only as bytes, and drops one that isn’t rather than the import', () => {
+    const s = still();
+    const a = webpAnim();
+    const copy = Uint8Array.of(1, 2);
+    expect(emoteFileFrom({ name: 'x', still: s, anim: a, shareAnim: copy })).toEqual({ name: 'x', still: s, anim: a, shareAnim: copy });
+    expect(emoteFileFrom({ name: 'x', still: s, anim: a, shareAnim: 'nope' })).toEqual({ name: 'x', still: s, anim: a });
+  });
+
   it('keeps a clip length only with art, and only a whole one within a clip\'s limits', () => {
     const s = still();
     const a = webpAnim();
@@ -328,6 +341,49 @@ describe('emoteFileFrom', () => {
       { name: 'x', still: still(), anim: 'gif' }, { name: 'x', still: still(), anim: null }, { name: 'x', still: new ArrayBuffer(4) }]) {
       expect(emoteFileFrom(raw), JSON.stringify(raw)).toBeNull();
     }
+  });
+});
+
+describe('shared animations', () => {
+  it('checkSharedAnim takes a small moving WebP, and nothing too large, too long or still', () => {
+    expect(checkSharedAnim(shareAnim())).toBeNull();
+    expect(checkSharedAnim(FRAME)).toBe('type');
+    expect(checkSharedAnim(gif())).toBe('type');
+    expect(checkSharedAnim(shareAnim(101, 10))).toBe('animSize'); // too many frames
+    expect(checkSharedAnim(shareAnim(3, 2000))).toBe('animSize'); // 6 s
+    expect(checkSharedAnim(muxWebpAnimation([{ file: FRAME, ms: 100 }], 300, 6) as Uint8Array)).toBe('animSize'); // too wide
+    expect(checkSharedAnim(new Uint8Array(300_000))).toBe('animSize');
+  });
+
+  it('saves a moving emote’s copy for rooms and records its hash, and leaves out one that fails its checks', async () => {
+    const lib = new EmoteLibrary(join(tempDir(), 'emotes'));
+    const copy = shareAnim();
+    const s1 = still(160, 120, 600, 1);
+    const kept = await lib.save({ name: 'moving', still: s1, anim: webpAnim(), shareAnim: copy }, []);
+    expect(kept).toMatchObject({ ok: true, emote: { animated: true, shareAnim: hashOf(copy) } });
+    expect(readFileSync(join(lib.dir, `${hashOf(s1)}.share.webp`))).toEqual(Buffer.from(copy));
+    const s2 = still(160, 120, 600, 2);
+    const dropped = await lib.save({ name: 'bad copy', still: s2, anim: webpAnim(), shareAnim: FRAME }, []);
+    expect(dropped.ok && 'shareAnim' in dropped.emote).toBe(false);
+    const s3 = still(160, 120, 600, 3);
+    const flat = await lib.save({ name: 'still art', still: s3, anim: stillExtended(0, 300, 200), shareAnim: copy }, []);
+    expect(flat.ok && 'shareAnim' in flat.emote).toBe(false); // art that doesn't move has nothing to share
+    expect(files(lib.dir).filter((f) => f.endsWith('.share.webp'))).toEqual([`${hashOf(s1)}.share.webp`]);
+    await lib.remove(`c:${hashOf(s1)}`);
+    expect(files(lib.dir).filter((f) => f.startsWith(hashOf(s1)))).toEqual([]);
+  });
+
+  it('keeps a copy made later for an emote that has none, and reads its full-size art back for it', async () => {
+    const lib = new EmoteLibrary(join(tempDir(), 'emotes'));
+    const s = still(160, 120, 600, 1);
+    const a = gif();
+    await lib.save({ name: 'gif', still: s, anim: a }, []);
+    const id = `c:${hashOf(s)}`;
+    expect(await lib.readAnim(id)).toEqual(new Uint8Array(a));
+    expect(await lib.setShareAnim(id, FRAME)).toBeNull();
+    expect(await lib.setShareAnim(id, shareAnim())).toBe(hashOf(shareAnim()));
+    expect(existsSync(join(lib.dir, `${hashOf(s)}.share.webp`))).toBe(true);
+    expect(await lib.readAnim(`c:${'0'.repeat(32)}`)).toBeNull();
   });
 });
 

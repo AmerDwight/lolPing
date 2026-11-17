@@ -3,12 +3,14 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { AUDIO_TYPES, sniffAudio } from '../shared/audioSniff';
 import {
-  ANIM_MAX_BYTES, ANIM_MAX_SIDE, CUSTOM_NAME_MAX, MAX_CUSTOM_EMOTES, SHARED_SOUND_MAX_BYTES, SHARED_SOUND_MAX_S, SOUND_MAX_BYTES,
-  STILL_MAX_BYTES, STILL_SIDE, customHash, customStillUrl, isBundledEmote, isClipMs, isCustomRef, ownCustomArt,
+  ANIM_MAX_BYTES, ANIM_MAX_SIDE, CUSTOM_NAME_MAX, MAX_CUSTOM_EMOTES, SHARED_ANIM_MAX_BYTES, SHARED_ANIM_MAX_FRAMES, SHARED_ANIM_MAX_MS,
+  SHARED_ANIM_SIDE, SHARED_SOUND_MAX_BYTES, SHARED_SOUND_MAX_S, SOUND_MAX_BYTES, STILL_MAX_BYTES, STILL_SIDE, customHash, customStillUrl,
+  isBundledEmote, isClipMs, isCustomRef, ownCustomArt,
   type CustomEmote, type EmoteArt, type EmoteFile, type EmoteRef, type ImportError, type SoundError,
 } from '../shared/emotes';
 import { gifExtent, isAnimatedWebp, sniffImage, webpSize } from '../shared/imageSniff';
 import { oggOpusInfo } from '../shared/oggOpus';
+import { webpAnimInfo } from '../shared/webpAnim';
 import { sanitizeName } from '../shared/roomProtocol';
 import { isFile } from './fileState';
 import { renameWithRetry } from './settingsStore';
@@ -16,6 +18,9 @@ import { renameWithRetry } from './settingsStore';
 const soundNames = (hash: string): string[] => AUDIO_TYPES.map((t) => `${hash}.sound.${t}`);
 /** The small copy of an emote's sound that room members get, named after the emote like its other files. */
 export const shareName = (hash: string): string => `${hash}.share.ogg`;
+/** The small copy of a moving emote's animation that room members get. */
+export const shareAnimName = (hash: string): string => `${hash}.share.webp`;
+const digest32 = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex').slice(0, 32);
 export type SoundSaved = { ok: true; share: string | null } | { ok: false; error: SoundError };
 
 export type SaveResult = { ok: true; emote: CustomEmote } | { ok: false; error: ImportError };
@@ -26,11 +31,12 @@ const longest = (size: { width: number; height: number }): number => Math.max(si
 /** An import as it arrived over IPC, rebuilt from its known fields: a string name and byte arrays. Null for anything else. */
 export function emoteFileFrom(raw: unknown): EmoteFile | null {
   if (typeof raw !== 'object' || raw === null) return null;
-  const { name, still, anim, clip } = raw as Record<string, unknown>;
+  const { name, still, anim, clip, shareAnim } = raw as Record<string, unknown>;
   if (typeof name !== 'string' || !(still instanceof Uint8Array)) return null;
   if (anim === undefined) return { name, still };
   if (!(anim instanceof Uint8Array)) return null;
-  return isClipMs(clip) ? { name, still, anim, clip } : { name, still, anim };
+  // A copy that isn't bytes is left out rather than the import refused: the emote still works, friends see its still.
+  return { name, still, anim, ...(isClipMs(clip) ? { clip } : {}), ...(shareAnim instanceof Uint8Array ? { shareAnim } : {}) };
 }
 
 /** The still the settings window encoded: a still WebP of at most STILL_MAX_BYTES and STILL_SIDE px. */
@@ -76,6 +82,19 @@ export function checkShared(b: Uint8Array): SoundError | null {
 }
 
 /**
+ * The copy of an animation that travels: a moving WebP of at most SHARED_ANIM_MAX_BYTES and SHARED_ANIM_SIDE px, with at
+ * most SHARED_ANIM_MAX_FRAMES frames lasting at most SHARED_ANIM_MAX_MS, all read from its chunks. A small file can
+ * otherwise decode to a great many frames.
+ */
+export function checkSharedAnim(b: Uint8Array): ImportError | null {
+  if (b.length > SHARED_ANIM_MAX_BYTES) return 'animSize';
+  const info = webpAnimInfo(b);
+  if (!info) return 'type';
+  if (Math.max(info.width, info.height) > SHARED_ANIM_SIDE || info.frames > SHARED_ANIM_MAX_FRAMES) return 'animSize';
+  return info.ms > SHARED_ANIM_MAX_MS ? 'animSize' : null;
+}
+
+/**
  * What an emote looks like on screen. Our own imported emote shows at `scale` percent of its art's size. A room
  * member's shows as its still when it is one of ours too, or, through `cacheHas`, when its still arrived over the room,
  * and the sender's message says its size. Anything else is the placeholder.
@@ -114,9 +133,16 @@ export class EmoteLibrary {
 
     const animName = f.anim ? `${hash}.anim.${sniffImage(f.anim)}` : null;
     const size = artSize(f.anim ?? f.still);
-    const files = [{ name: `${hash}.webp`, data: f.still }, ...(f.anim && animName ? [{ name: animName, data: f.anim }] : [])];
-    // Files left by an earlier copy of this image: an animation in the other format would be served instead of this one.
-    const stale = [`${hash}.anim.gif`, `${hash}.anim.webp`].filter((n) => n !== animName);
+    const animated = f.anim !== undefined && moves(f.anim);
+    // The copy for rooms is kept only when it passes its own checks: without it the emote works, and friends see its still.
+    const shareAnim = animated && f.shareAnim && checkSharedAnim(f.shareAnim) === null ? f.shareAnim : null;
+    const files = [
+      { name: `${hash}.webp`, data: f.still }, ...(f.anim && animName ? [{ name: animName, data: f.anim }] : []),
+      ...(shareAnim ? [{ name: shareAnimName(hash), data: shareAnim }] : []),
+    ];
+    // Files left by an earlier copy of this image: an animation in the other format would be served instead of this one,
+    // and an old copy for rooms would go on being shared.
+    const stale = [`${hash}.anim.gif`, `${hash}.anim.webp`, shareAnimName(hash)].filter((n) => !files.some((f) => f.name === n));
     try {
       await this.write(files, stale);
     } catch (err) {
@@ -125,12 +151,12 @@ export class EmoteLibrary {
     }
     // A name with nothing left shows the first characters of its hash, as in normalizeSettings.
     const name = sanitizeName(f.name.slice(0, 256), hash.slice(0, 6), CUSTOM_NAME_MAX);
-    const animated = f.anim !== undefined && moves(f.anim);
     return {
       ok: true,
       emote: {
         id, name, animated, ...(size ? { w: size.width, h: size.height } : {}),
         ...(animated && f.clip !== undefined ? { clip: f.clip } : {}),
+        ...(shareAnim ? { shareAnim: digest32(shareAnim) } : {}),
       },
     };
   }
@@ -176,6 +202,31 @@ export class EmoteLibrary {
     return null;
   }
 
+  /** Keeps `share` as the copy for rooms of the emote's animation, and hands back its hash; null when it fails its checks or the disk refuses. */
+  async setShareAnim(id: EmoteRef, share: Uint8Array): Promise<string | null> {
+    if (!isCustomRef(id) || checkSharedAnim(share) !== null) return null;
+    try {
+      await this.write([{ name: shareAnimName(customHash(id)), data: share }], []);
+      return digest32(share);
+    } catch (err) {
+      console.warn('[emotes] could not save a shared animation:', (err as Error).message);
+      return null;
+    }
+  }
+
+  /** The emote's full-size art, when it has a file of its own (not the still). */
+  async readAnim(id: EmoteRef): Promise<Uint8Array | null> {
+    if (!isCustomRef(id)) return null;
+    for (const name of [`${customHash(id)}.anim.gif`, `${customHash(id)}.anim.webp`]) {
+      try {
+        return new Uint8Array(await readFile(join(this.dir, name)));
+      } catch {
+        // not this format
+      }
+    }
+    return null;
+  }
+
   /** Keeps `share` as the copy for rooms of a sound that is already stored, and hands back its hash; null when it fails its checks or the disk refuses. */
   async setShare(id: EmoteRef, share: Uint8Array): Promise<string | null> {
     if (!isCustomRef(id) || checkShared(share) !== null) return null;
@@ -192,7 +243,7 @@ export class EmoteLibrary {
   async remove(id: EmoteRef): Promise<void> {
     if (!isCustomRef(id)) return;
     const hash = customHash(id);
-    await Promise.all([`${hash}.webp`, `${hash}.anim.gif`, `${hash}.anim.webp`, ...soundNames(hash), shareName(hash)].map((n) =>
+    await Promise.all([`${hash}.webp`, `${hash}.anim.gif`, `${hash}.anim.webp`, ...soundNames(hash), shareName(hash), shareAnimName(hash)].map((n) =>
       rm(join(this.dir, n), { force: true }).catch((err: Error) => console.warn('[emotes] could not delete', n, err.message))));
   }
 

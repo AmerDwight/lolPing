@@ -16,11 +16,13 @@ import { api } from '../api';
 import { prepareEmote, prepareSound } from '../emoteImport';
 import { useText } from '../text';
 import type { Update } from '../useAppState';
+import { isVideoFile } from '../videoEmote';
+import { ClipTrimmer, type ClipResult } from './ClipTrimmer';
 import { SettingRow, SliderRow, SwitchRow } from './rows';
 import { TriggerPicker } from './TriggerPicker';
 import { WheelEditor, type PoolItem } from './WheelEditor';
 
-const ACCEPT = 'image/png,image/jpeg,image/gif,image/webp';
+const ACCEPT = 'image/png,image/jpeg,image/gif,image/webp,video/mp4,video/webm,video/quicktime,video/x-matroska,.mp4,.m4v,.mov,.webm,.mkv';
 const ACCEPT_SOUND = 'audio/mpeg,audio/ogg,audio/wav,.mp3,.ogg,.wav';
 
 function importMessage(t: Strings, error: ImportError, file: string): string {
@@ -31,6 +33,9 @@ function importMessage(t: Strings, error: ImportError, file: string): string {
     case 'detail': return t.importErrDetail(file);
     case 'full': return t.importErrFull;
     case 'duplicate': return t.importErrDuplicate(file);
+    case 'videoType': return t.importErrVideoType(file);
+    case 'videoSize': return t.importErrVideoSize(file);
+    case 'videoShort': return t.importErrVideoShort(file);
     default: return t.importErrDisk(file);
   }
 }
@@ -69,13 +74,46 @@ async function importFile(file: File): Promise<ImportError | null> {
 }
 
 /**
+ * Saves a clip the trim dialog made, then gives it the clip's sound. The emote stays when only the sound fails, and the
+ * message says so. Null when all went well or the dialog was cancelled.
+ */
+async function saveClip(t: Strings, result: ClipResult, file: string): Promise<string | null> {
+  if (!result) return null;
+  if (!result.ok) return importMessage(t, result.error, file);
+  try {
+    const saved = await api.importEmote(result.clip.file);
+    if (!saved.ok) return importMessage(t, saved.error, file);
+    const sound = result.clip.sound;
+    if (!sound) return null;
+    const given = await api.setEmoteSound(saved.id, sound.bytes, sound.share);
+    return given.ok ? null : soundMessage(t, given.error, file);
+  } catch {
+    return importMessage(t, 'disk', file);
+  }
+}
+
+/** The video waiting in the trim dialog, and what to do with the dialog's result. */
+interface PendingClip {
+  file: File;
+  done(result: ClipResult): void;
+}
+
+/**
  * Add image… and what an import has to say, under the pool. Files from the button or dropped on the pool are imported one
- * at a time; the errors of a batch stay until an import succeeds with none.
+ * at a time, a video after its trim dialog closes; the errors of a batch stay until an import succeeds with none.
  */
 function useImports(t: Strings) {
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
+  const [clip, setClip] = useState<PendingClip | null>(null);
   const queue = useRef<Promise<void>>(Promise.resolve());
+  const trim = (file: File): Promise<ClipResult> => new Promise((resolve) => setClip({
+    file,
+    done: (result) => {
+      setClip(null);
+      resolve(result);
+    },
+  }));
 
   // A file dropped anywhere else in the window would replace the settings page with the image: refuse such drops.
   useEffect(() => {
@@ -98,8 +136,13 @@ function useImports(t: Strings) {
       setBusy(true);
       const batch: string[] = [];
       for (const file of files) {
-        const error = await importFile(file);
-        if (error) batch.push(importMessage(t, error, file.name));
+        if (await isVideoFile(file).catch(() => false)) {
+          const message = await saveClip(t, await trim(file), file.name);
+          if (message) batch.push(message);
+        } else {
+          const error = await importFile(file);
+          if (error) batch.push(importMessage(t, error, file.name));
+        }
         setErrors([...batch]);
       }
       setBusy(false);
@@ -114,7 +157,7 @@ function useImports(t: Strings) {
       setBusy(false);
     });
   };
-  return { busy, errors, importFiles, importSound, clearErrors: () => setErrors([]) };
+  return { busy, errors, clip, importFiles, importSound, clearErrors: () => setErrors([]) };
 }
 
 /** The settings change for a wheel edit: only the fields it touches, since an undefined field would reset that setting. */
@@ -137,7 +180,7 @@ export function EmoteSection({ settings: s, update, lengthUnit }: { settings: Se
   // With no key there is nothing to name in the labels, so they fall back to the row's own title.
   const key = s.emoteTrigger === 'off' ? t.emoteKey : triggerLabel(s.emoteTrigger, t.lang, api.platform);
 
-  const { busy, errors, importFiles, importSound, clearErrors } = useImports(t);
+  const { busy, errors, clip, importFiles, importSound, clearErrors } = useImports(t);
   const picker = useRef<HTMLInputElement>(null);
   const soundPicker = useRef<HTMLInputElement>(null);
   const soundFor = useRef<EmoteRef | null>(null); // the emote whose speaker opened the sound picker
@@ -222,6 +265,7 @@ export function EmoteSection({ settings: s, update, lengthUnit }: { settings: Se
         defaults={{ wheel: DEFAULT_EMOTE_WHEEL, center: DEFAULT_CLICK_EMOTE }}
         labels={{ title: t.emoteWheelTitle, desc: t.emoteWheelDesc(key), poolTitle: t.allEmotes, poolDesc: t.allEmotesDesc }}
         onChange={(patch) => void update(emotePatch(patch))} onPreview={(ref) => void api.previewEmote(ref)} />
+      {clip ? <ClipTrimmer key={`${clip.file.name}:${clip.file.lastModified}`} file={clip.file} onDone={clip.done} /> : null}
     </>
   );
 }

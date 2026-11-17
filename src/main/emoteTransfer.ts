@@ -1,10 +1,16 @@
 import { createHash } from 'node:crypto';
-import { EMOTE_CHUNKS_MAX, SOUND_CHUNKS_MAX, type BlobMsg, type ChunkMsg, type WantMsg } from '../shared/roomProtocol';
-import { checkShared, checkStill } from './emoteLibrary';
+import { SHARED_ANIM_MAX_BYTES } from '../shared/emotes';
+import {
+  ANIM_BLOB_PARTS_MAX, ANIM_CHUNKS_MAX, BLOB_PARTS_MAX, EMOTE_CHUNKS_MAX, EMOTE_NEED_MAX, SOUND_CHUNKS_MAX, type BlobMsg, type ChunkMsg,
+  type WantMsg,
+} from '../shared/roomProtocol';
+import { checkShared, checkSharedAnim, checkStill } from './emoteLibrary';
 
-/** What travels: a custom emote's still, or the shared copy of its sound. Each has its own checks and chunk count. */
-export type BlobKind = 'still' | 'sound';
-const CHUNKS_MAX: Record<BlobKind, number> = { still: EMOTE_CHUNKS_MAX, sound: SOUND_CHUNKS_MAX };
+/** What travels: a custom emote's still, the shared copy of its sound, or that of its animation. Each has its own checks and part counts. */
+export type BlobKind = 'still' | 'sound' | 'anim';
+const CHUNKS_MAX: Record<BlobKind, number> = { still: EMOTE_CHUNKS_MAX, sound: SOUND_CHUNKS_MAX, anim: ANIM_CHUNKS_MAX };
+const BLOBS_MAX: Record<BlobKind, number> = { still: BLOB_PARTS_MAX, sound: BLOB_PARTS_MAX, anim: ANIM_BLOB_PARTS_MAX };
+const CHECK: Record<BlobKind, (b: Uint8Array) => unknown> = { still: checkStill, sound: checkShared, anim: checkSharedAnim };
 
 /** One chunk carries this many bytes: 1,000 base64 characters, and a sealed chunk stays under the 1,200-byte packet cap. */
 export const EMOTE_CHUNK_BYTES = 750;
@@ -17,6 +23,13 @@ export const BLOB_PART_BYTES = 6000;
 export const MAX_ASSEMBLIES = 36;
 export const MAX_PENDING_BYTES = 256 * 1024;
 export const ASSEMBLY_TIMEOUT_MS = 60_000;
+/**
+ * Animations are up to 16 times a still's size, so at most this many assemble at once, in a budget of their own, and
+ * each gets longer: over chunks alone a full one takes about 70 s on a relay. The others wait for the next presence.
+ */
+export const ANIM_ASSEMBLIES_MAX = 2;
+export const ANIM_PENDING_BYTES = ANIM_ASSEMBLIES_MAX * SHARED_ANIM_MAX_BYTES;
+export const ANIM_ASSEMBLY_TIMEOUT_MS = 180_000;
 /**
  * Silence from the announcer before a want is repeated; at most this many re-asks, then the hash waits for the next
  * presence. While the announcer is sending anything at all it is working through its queue, and asking again would only
@@ -37,6 +50,8 @@ interface Announced {
   stills: Set<string>;
   /** Still hash → the hash of that emote's shared sound. */
   sounds: Map<string, string>;
+  /** Still hash → the hash of that emote's shared animation, from the member's last `anims` message. */
+  anims: Map<string, string>;
 }
 
 /** One way a file is arriving: its part count (0 until the first part) and the parts so far. */
@@ -82,9 +97,11 @@ export interface EmoteTransferDeps {
   announced(): readonly string[];
   /** The shared sound hashes our presence announces right now. */
   announcedSounds(): readonly string[];
+  /** The shared animation hashes we announce right now. Left out by tools that share none. */
+  announcedAnims?(): readonly string[];
   /** The Show friends' custom emotes switch. */
   enabled(): boolean;
-  /** Keeps a still or shared sound that passed the hash check and its own. */
+  /** Keeps a still, shared sound or shared animation that passed the hash check and its own. */
   put(hash: string, bytes: Uint8Array, kind: BlobKind): void;
   /** How a member is reached right now: a LAN unicast, a relay broadcast, or neither. */
   routeOf(peer: string): 'lan' | 'shared' | null;
@@ -95,10 +112,10 @@ export interface EmoteTransferDeps {
 }
 
 /**
- * Moves custom emote stills and the shared copies of their sounds over a room, both ways. The ID is the SHA-256 prefix
+ * Moves custom emote stills and the shared copies of their sounds and animations over a room, both ways. The ID is the SHA-256 prefix
  * of the bytes, so a finished assembly that doesn't hash back to it is dropped: nobody can substitute another member's
- * image or sound. Bytes are only ever written to the cache as `<hash>.webp` or `<hash>.ogg` and only ever decoded by
- * Chromium as an image or as audio; nothing here executes them.
+ * image or sound. Bytes are only ever written to the cache as `<hash>.webp`, `<hash>.ogg` or `<hash>.anim.webp` and only
+ * ever decoded by Chromium as an image or as audio; nothing here executes them.
  *
  * RoomManager emits 'emotes' (a presence's announced hashes and sounds), 'want', 'chunk' and 'memberGone'; this class answers.
  */
@@ -128,16 +145,42 @@ export class EmoteTransfer {
     hashes.forEach((hash, i) => {
       if (sounds[i]) map.set(hash, sounds[i]);
     });
-    this.announcers.set(peer, { stills: new Set(hashes), sounds: map });
+    // The animations come in a message of their own, so a presence keeps the last ones, for the stills it still announces.
+    const before = this.announcers.get(peer)?.anims ?? new Map<string, string>();
+    const anims = new Map([...before].filter(([still]) => hashes.includes(still)));
+    this.announcers.set(peer, { stills: new Set(hashes), sounds: map, anims });
     if (!this.deps.enabled()) return;
     for (const hash of hashes) this.prefetch(peer, hash, 'still');
     for (const hash of map.values()) this.prefetch(peer, hash, 'sound');
+    for (const hash of anims.values()) this.prefetch(peer, hash, 'anim');
   }
 
-  /** Opens an assembly for `hash` and asks `peer` for it, unless it is here, already on its way, or too many are. */
+  /**
+   * A member's `anims` message: the shared animation of each moving emote it announces, [still, animation]. Pairs for a
+   * still its presence doesn't announce are kept too, since the two messages can arrive in either order.
+   */
+  announcedAnims(peer: string, pairs: readonly (readonly [string, string])[]): void {
+    const a = this.announcers.get(peer) ?? { stills: new Set<string>(), sounds: new Map<string, string>(), anims: new Map<string, string>() };
+    a.anims = new Map(pairs.map(([still, anim]) => [still, anim]));
+    this.announcers.set(peer, a);
+    if (!this.deps.enabled()) return;
+    for (const hash of a.anims.values()) this.prefetch(peer, hash, 'anim');
+  }
+
+  /**
+   * Opens an assembly for `hash` and asks `peer` for it, unless it is here, already on its way, or too many are. An
+   * animation also waits while ANIM_ASSEMBLIES_MAX others assemble.
+   */
   private prefetch(peer: string, hash: string, kind: BlobKind): void {
     if (this.deps.have(hash, kind) || this.assemblies.has(hash) || this.assemblies.size >= MAX_ASSEMBLIES) return;
+    if (kind === 'anim' && this.animsAssembling() >= ANIM_ASSEMBLIES_MAX) return;
     this.assemblies.set(hash, this.open(kind, peer, this.sendWant(peer, hash, [], true)));
+  }
+
+  private animsAssembling(): number {
+    let n = 0;
+    for (const a of this.assemblies.values()) if (a.kind === 'anim') n++;
+    return n;
   }
 
   private open(kind: BlobKind, ask: string, asked: boolean): Assembly {
@@ -148,6 +191,11 @@ export class EmoteTransfer {
   /** The shared sound `peer` announced for the emote `hash`, or null: what plays when their emote lands here. */
   soundFor(peer: string, hash: string): string | null {
     return this.announcers.get(peer)?.sounds.get(hash) ?? null;
+  }
+
+  /** The shared animation `peer` announced for the emote `hash`, or null: what moves when their emote lands here. */
+  animFor(peer: string, hash: string): string | null {
+    return this.announcers.get(peer)?.anims.get(hash) ?? null;
   }
 
   /**
@@ -199,14 +247,16 @@ export class EmoteTransfer {
     const kind = this.kindFrom(c.peer, c.h);
     if (!kind) return; // only from a member who announced that hash
     this.lastFrom.set(c.peer, this.deps.now()); // it is sending, whether or not this part is one we still need
-    if (as === 'chunks' && c.n > CHUNKS_MAX[kind]) return; // more chunks than its kind can have: it could never pass the size check
+    // More parts than its kind can have: it could never pass the size check.
+    if (c.n > (as === 'chunks' ? CHUNKS_MAX : BLOBS_MAX)[kind]) return;
     const part = Buffer.from(c.b, 'base64');
     let a = this.assemblies.get(c.h);
     if (a && a.kind !== kind) return; // two members announced one hash as different things: the first one's kind stands
-    if (this.pendingBytes() + part.length > MAX_PENDING_BYTES) return;
+    const anim = kind === 'anim';
+    if (this.pendingBytes(anim) + part.length > (anim ? ANIM_PENDING_BYTES : MAX_PENDING_BYTES)) return;
     if (!a) {
       if (this.deps.have(c.h, kind)) return; // already stored: a straggler chunk must not open a zombie assembly
-      if (this.assemblies.size >= MAX_ASSEMBLIES) return;
+      if (this.assemblies.size >= MAX_ASSEMBLIES || (anim && this.animsAssembling() >= ANIM_ASSEMBLIES_MAX)) return;
       a = this.open(kind, c.peer, true);
       this.assemblies.set(c.h, a);
     }
@@ -243,6 +293,7 @@ export class EmoteTransfer {
     for (const a of this.announcers.values()) {
       for (const hash of a.stills) if (!wanted.has(hash)) wanted.set(hash, 'still');
       for (const hash of a.sounds.values()) if (!wanted.has(hash)) wanted.set(hash, 'sound');
+      for (const hash of a.anims.values()) if (!wanted.has(hash)) wanted.set(hash, 'anim');
     }
     let have = 0;
     for (const [hash, kind] of wanted) if (this.deps.have(hash, kind)) have++;
@@ -253,11 +304,12 @@ export class EmoteTransfer {
   progressOf(peer: string): { have: number; total: number } | null {
     const a = this.announcers.get(peer);
     if (!a || !this.deps.enabled()) return null;
-    const total = a.stills.size + a.sounds.size;
+    const total = a.stills.size + a.sounds.size + a.anims.size;
     if (total === 0) return null;
     let have = 0;
     for (const hash of a.stills) if (this.deps.have(hash, 'still')) have++;
     for (const hash of a.sounds.values()) if (this.deps.have(hash, 'sound')) have++;
+    for (const hash of a.anims.values()) if (this.deps.have(hash, 'anim')) have++;
     return { have, total };
   }
 
@@ -276,6 +328,7 @@ export class EmoteTransfer {
     for (const [peer, a] of this.announcers) {
       for (const hash of a.stills) this.prefetch(peer, hash, 'still');
       for (const hash of a.sounds.values()) this.prefetch(peer, hash, 'sound');
+      for (const hash of a.anims.values()) this.prefetch(peer, hash, 'anim');
     }
   }
 
@@ -286,7 +339,8 @@ export class EmoteTransfer {
   /** What `hash` is in our own announcement, or null when we announce no such thing. */
   private ownKind(hash: string): BlobKind | null {
     if (this.deps.announced().includes(hash)) return 'still';
-    return this.deps.announcedSounds().includes(hash) ? 'sound' : null;
+    if (this.deps.announcedSounds().includes(hash)) return 'sound';
+    return (this.deps.announcedAnims?.() ?? []).includes(hash) ? 'anim' : null;
   }
 
   /** What `peer` announced `hash` as, or null when they didn't. */
@@ -295,16 +349,18 @@ export class EmoteTransfer {
     if (!a) return null;
     if (a.stills.has(hash)) return 'still';
     for (const sound of a.sounds.values()) if (sound === hash) return 'sound';
+    for (const anim of a.anims.values()) if (anim === hash) return 'anim';
     return null;
   }
 
-  private pendingBytes(): number {
+  /** Bytes assembling: of animations, or of everything else. Each has its own budget. */
+  private pendingBytes(anims: boolean): number {
     let total = 0;
-    for (const a of this.assemblies.values()) total += a.bytes;
+    for (const a of this.assemblies.values()) if ((a.kind === 'anim') === anims) total += a.bytes;
     return total;
   }
 
-  /** A complete set of parts, in order: kept only when it hashes back to its ID and is a still or shared sound this app would save itself. */
+  /** A complete set of parts, in order: kept only when it hashes back to its ID and is a file of its kind this app would save itself. */
   private finish(hash: string, a: Assembly, parts: Parts): void {
     this.assemblies.delete(hash);
     const pieces: Uint8Array[] = [];
@@ -315,7 +371,7 @@ export class EmoteTransfer {
     }
     const full = new Uint8Array(Buffer.concat(pieces));
     if (createHash('sha256').update(full).digest('hex').slice(0, 32) !== hash) return;
-    if ((a.kind === 'still' ? checkStill(full) : checkShared(full)) !== null) return;
+    if (CHECK[a.kind](full) !== null) return;
     this.deps.put(hash, full, a.kind);
   }
 
@@ -352,7 +408,7 @@ export class EmoteTransfer {
         return;
       }
       let egress = 0; // chunks sent this tick, across every queue and requester
-      const ours = new Set([...this.deps.announced(), ...this.deps.announcedSounds()]);
+      const ours = new Set([...this.deps.announced(), ...this.deps.announcedSounds(), ...(this.deps.announcedAnims?.() ?? [])]);
       for (const [hash, q] of [...this.sends]) {
         if (!ours.has(hash)) {
           this.sends.delete(hash); // the emote left our wheel, or its sound changed: nobody may still be served it
@@ -377,7 +433,7 @@ export class EmoteTransfer {
       }
       const now = this.deps.now();
       for (const [hash, a] of [...this.assemblies]) {
-        if (now - a.firstAt >= ASSEMBLY_TIMEOUT_MS || this.kindFrom(a.ask, hash) === null) {
+        if (now - a.firstAt >= (a.kind === 'anim' ? ANIM_ASSEMBLY_TIMEOUT_MS : ASSEMBLY_TIMEOUT_MS) || this.kindFrom(a.ask, hash) === null) {
           this.assemblies.delete(hash);
           continue;
         }
@@ -392,7 +448,8 @@ export class EmoteTransfer {
           continue;
         }
         const { n, got } = a.chunks;
-        const need = n === 0 ? [] : Array.from({ length: n }, (_, i) => i).filter((i) => !got.has(i));
+        // A want carries at most EMOTE_NEED_MAX indexes: an animation missing more asks for the first ones, then the rest.
+        const need = n === 0 ? [] : Array.from({ length: n }, (_, i) => i).filter((i) => !got.has(i)).slice(0, EMOTE_NEED_MAX);
         // Blob parts once more while nothing has come at all; after that, or once chunks have started, chunks.
         // The first and third re-ask go through the relays even to a LAN member, whose LAN answer may not get here.
         if (!this.sendWant(a.ask, hash, need, a.reasks === 0 && n === 0, a.reasks % 2 === 0)) continue; // waits for a token: not a re-ask yet

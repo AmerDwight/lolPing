@@ -10,6 +10,8 @@ import type { WheelKind } from '../../shared/protocol';
 import { tagColorCss } from '../../shared/roomColors';
 import { DEFAULT_SETTINGS, overlaySettings, soundLevel, type OverlaySettings } from '../../shared/settings';
 import '../shared/emoteFx.css';
+import { sniffImage } from '../../shared/imageSniff';
+import { sharedAnimFromImage } from '../shared/animShare';
 import { encodeShared } from '../shared/soundShare';
 import { EmoteStage } from './emoteStage';
 import { GlowStage } from './glowFx';
@@ -181,6 +183,15 @@ window.overlay.on('emote:encode', (p) => {
     }
     window.overlay.reportShare(p.id, share);
   })();
+});
+// And a moving emote added before animations travelled, for the small copy room members get.
+window.overlay.on('emote:encodeAnim', (p) => {
+  const type = sniffImage(p.anim);
+  if (type !== 'gif' && type !== 'webp') {
+    window.overlay.reportShareAnim(p.id, null);
+    return;
+  }
+  void sharedAnimFromImage(p.anim, type === 'gif' ? 'image/gif' : 'image/webp').then((share) => window.overlay.reportShareAnim(p.id, share));
 });
 window.overlay.on('toast:show', (t) => showToast(toastLayer, t.title, t.body));
 window.overlay.on('text:spawn', (t) => texts.spawn(t));

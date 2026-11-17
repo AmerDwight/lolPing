@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CLICK_EMOTE, DEFAULT_EMOTE_WHEEL, EMOTE_CATALOG } from '../../src/shared/emoteCatalog';
 import {
-  allEmoteAssetFiles, announcedEmoteHashes, announcedEmoteSounds, catalogEmote, customAnimUrl, customHash, customStillUrl, emoteAnimUrl, emoteIconUrl,
+  allEmoteAssetFiles, announcedEmoteAnims, announcedEmoteHashes, announcedEmoteSounds, catalogEmote, customAnimUrl, customHash, customStillUrl, emoteAnimUrl, emoteIconUrl,
   EMOTE_FX_VARIANTS, emoteName, emoteSoundUrl, isBundledEmote, isCustomRef, isEmoteRefShape, normalizeClickEmote,
   normalizeEmoteWheel, ownCustomArt, scaledArtSize, type CustomEmote,
 } from '../../src/shared/emotes';
@@ -216,5 +216,15 @@ describe('ownCustomArt', () => {
 
   it('stays the usual time for a clip shorter than that', () => {
     expect(ownCustomArt({ ...mine, clip: 2000 }, 100)).not.toHaveProperty('dur');
+  });
+});
+
+describe('announcedEmoteAnims', () => {
+  it('pairs each announced hash that has a shared animation with it, in order', () => {
+    const list: CustomEmote[] = [
+      { ...custom(HASH, 'a', true), shareAnim: 'c'.repeat(32) }, custom(HASH_B, 'b', true), { ...custom('d'.repeat(32), 'd', true), shareAnim: 'e'.repeat(32) },
+    ];
+    expect(announcedEmoteAnims(['d'.repeat(32), HASH_B, HASH], list)).toEqual([['d'.repeat(32), 'e'.repeat(32)], [HASH, 'c'.repeat(32)]]);
+    expect(announcedEmoteAnims([], list)).toEqual([]);
   });
 });

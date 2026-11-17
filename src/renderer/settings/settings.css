@@ -132,6 +132,23 @@ main.content { overflow: auto; padding: 4px 28px 28px 20px; }
 .weImport { display: grid; gap: 4px; margin-top: 10px; }
 .weImportRow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
 .weImportError { font-size: 12px; line-height: 16px; color: #ff9c48; overflow-wrap: anywhere; }
+/* The trim dialog for a video emote: the preview, then a track with the clip's two edges and a playhead. */
+.clipBody { display: grid; gap: 10px; }
+.clipPreview { width: 100%; max-height: 320px; border-radius: 4px; background: #000; cursor: pointer; }
+.clipControls { display: flex; align-items: center; gap: 8px; }
+.clipTrack { position: relative; flex: 1; height: 34px; border-radius: 4px; background: var(--card-hover); border: 1px solid var(--stroke); touch-action: none; }
+.clipSel {
+  position: absolute; top: 0; bottom: 0; box-sizing: border-box; cursor: grab;
+  background: color-mix(in srgb, var(--colorBrandBackground) 30%, transparent); border-block: 2px solid var(--colorBrandBackground);
+}
+.clipSel:active { cursor: grabbing; }
+.clipHandle {
+  position: absolute; top: -3px; bottom: -3px; width: 10px; margin-left: -5px; border-radius: 3px; cursor: ew-resize;
+  background: var(--colorBrandBackground); outline-offset: 2px;
+}
+.clipHead { position: absolute; top: 2px; bottom: 2px; width: 2px; margin-left: -1px; background: var(--colorNeutralForeground1); pointer-events: none; }
+.clipTimes { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text3); }
+.clipWorking { display: inline-flex; align-items: center; gap: 6px; margin-right: auto; font-size: 12px; }
 .weHint { min-height: 16px; margin-top: 10px; font-size: 12px; line-height: 16px; color: var(--text3); }
 @media (max-width: 860px) { .weBody { grid-template-columns: 1fr; justify-items: center; } }
 .rowNote { margin: 1px 0 4px; padding: 0 20px 0 60px; font-size: 12px; line-height: 16px; color: var(--text3); }

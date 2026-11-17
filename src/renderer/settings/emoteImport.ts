@@ -4,6 +4,7 @@ import {
   STILL_MAX_BYTES, STILL_SIDE, type EmoteFile, type ImportError, type SoundError,
 } from '../../shared/emotes';
 import { imageSize, sniffImage, type ImageType } from '../../shared/imageSniff';
+import { sharedAnimFromImage } from '../shared/animShare';
 import { encodeShared } from '../shared/soundShare';
 
 export type Prepared = { ok: true; file: EmoteFile } | { ok: false; error: ImportError };
@@ -54,7 +55,7 @@ export function checkAnimation(bytes: Uint8Array, width: number, height: number)
 export const nameFromFile = (fileName: string): string => fileName.replace(/(.)\.[^.]*$/, '$1');
 
 /** The first encoding of `frame` that fits STILL_MAX_BYTES, or null when even the smallest is too big. */
-async function encodeStill(frame: VideoFrame): Promise<Uint8Array | null> {
+export async function encodeStill(frame: VideoFrame): Promise<Uint8Array | null> {
   let canvas: OffscreenCanvas | null = null;
   for (const { side, quality } of stillAttempts()) {
     const size = fitSize(frame.displayWidth, frame.displayHeight, side);
@@ -91,7 +92,8 @@ async function encodeFull(frame: VideoFrame): Promise<Uint8Array | null> {
 
 /**
  * Turns a picked or dropped file into what main saves: a small WebP still of its first frame, and the art at full size:
- * for a GIF or WebP with more than one frame the original bytes, for anything else a WebP of the image.
+ * for a GIF or WebP with more than one frame the original bytes and a small copy for rooms, for anything else a WebP of
+ * the image.
  */
 export async function prepareEmote(file: File): Promise<Prepared> {
   if (file.size > INPUT_MAX_BYTES) {
@@ -118,7 +120,12 @@ export async function prepareEmote(file: File): Promise<Prepared> {
     const still = await encodeStill(frame);
     if (!still) return fail('detail');
     const name = nameFromFile(file.name);
-    const anim = animated ? bytes : await encodeFull(frame);
+    if (animated) {
+      // The copy room members fetch; without one they see the still.
+      const shareAnim = await sharedAnimFromImage(bytes, type === 'gif' ? 'image/gif' : 'image/webp');
+      return { ok: true, file: shareAnim ? { name, still, anim: bytes, shareAnim } : { name, still, anim: bytes } };
+    }
+    const anim = await encodeFull(frame);
     return { ok: true, file: anim ? { name, still, anim } : { name, still } };
   } catch {
     return fail('type'); // looked like an image, but doesn't decode

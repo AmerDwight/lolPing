@@ -17,6 +17,7 @@ node tools/room-peer/run.mjs PING-XXXXX-XXXXX --name Bot --rate 1
 | `--relay` | off | Join through the public relays instead of the LAN |
 | `--emotes` | off | Also send emotes (see below) |
 | `--image` | none | A still `.webp` this peer owns and shares (see below) |
+| `--anim` | none | With `--image`: a shared animation `.webp` for that image, which lolPing fetches and plays (see below) |
 | `--app` | `room-peer` | The app version it announces. `0.5.2` or newer makes lolPing treat it as able to see text and votes (see below) |
 | `--text` | none | A line of room text, at most 120 characters, sent every 5 s at a random spot on `--display` |
 | `--alive` | off | Every 7 s, an alive line about a random member |
@@ -38,12 +39,18 @@ node tools/room-peer/run.mjs PING-XXXXX-XXXXX --emotes --rate 0.5
 
 ## Custom emote images
 
-The peer always fetches the images lolPing announces (the custom emotes on its wheel and centre) and prints `[in] still <hash> arrived and passed the hash and image checks` for each.
+The peer always fetches the images lolPing announces (the custom emotes on its wheel and centre), and their shared sounds and animations, and prints `[in] still <hash> arrived and passed the hash and image checks` for each still, `[in] sound <hash> …` for a sound and `[in] animation <hash> …` for an animation. lolPing announces its animations in an `anims` message after each presence, which prints as `[in] anims: <still> moves as <animation>`.
 
 With `--image still.webp` it also owns that image: it announces it, prints `[in] want <hash>` when lolPing asks for it, and sends it in chunks. With `--emotes`, its custom emote every 10 s is that image, so lolPing shows the picture instead of "?". The file must pass the import checks: a still WebP of at most 12,288 bytes and 160 px. The still lolPing writes for an imported image (`<settings folder>/emotes/<hash>.webp`) is one; copy it out, then remove that emote in lolPing so it has to fetch it.
 
 ```bash
 node tools/room-peer/run.mjs PING-XXXXX-XXXXX --emotes --rate 0.5 --image still.webp
+```
+
+With `--anim share.webp` as well, the image moves: the peer names the animation in an `anims` message after each presence and serves it when lolPing asks, and lolPing plays it in place of the still once it has arrived. The file must pass the checks a received animation does: a moving WebP of at most 256 KB, 240 px, 100 frames and 5.2 s. The copy lolPing keeps for one of its own moving emotes (`<settings folder>/emotes/<hash>.share.webp`) is one.
+
+```bash
+node tools/room-peer/run.mjs PING-XXXXX-XXXXX --emotes --rate 0.5 --image still.webp --anim share.webp
 ```
 
 Two peers on different ports reach each other too: the second one sends to the first on port 47474, and the first answers.

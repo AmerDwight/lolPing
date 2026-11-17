@@ -324,6 +324,7 @@ function customEmotes(raw: unknown): CustomEmote[] {
       // A size is both sides or neither: an entry without one is measured again at launch.
       ...(isArtSide(e.w) && isArtSide(e.h) ? { w: e.w, h: e.h } : {}),
       ...(e.animated && isClipMs(e.clip) ? { clip: e.clip } : {}),
+      ...(e.animated && typeof e.shareAnim === 'string' && HASH_RE.test(e.shareAnim) ? { shareAnim: e.shareAnim } : {}),
     });
   }
   return out;

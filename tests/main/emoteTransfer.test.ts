@@ -4,7 +4,8 @@ import {
   ASSEMBLY_TIMEOUT_MS, BLOB_PART_BYTES, EMOTE_CHUNK_BYTES, EmoteTransfer, LAN_TOTAL_CHUNKS_PER_TICK, MAX_ASSEMBLIES, MAX_PENDING_BYTES,
   REASKS_MAX, type BlobKind, type EmoteTransferDeps,
 } from '../../src/main/emoteTransfer';
-import { EMOTE_CHUNKS_MAX, SOUND_CHUNKS_MAX, type BlobMsg, type ChunkMsg, type WantMsg } from '../../src/shared/roomProtocol';
+import { EMOTE_CHUNKS_MAX, EMOTE_NEED_MAX, SOUND_CHUNKS_MAX, type BlobMsg, type ChunkMsg, type WantMsg } from '../../src/shared/roomProtocol';
+import { muxWebpAnimation } from '../../src/shared/webpAnim';
 import { opusSound } from './fixtures/opusSample';
 
 const ascii = (s: string): number[] => [...s].map((c) => c.charCodeAt(0));
@@ -18,6 +19,27 @@ const still = (size = 600, seed = 7): Uint8Array => {
   return out;
 };
 const hashOf = (b: Uint8Array): string => createHash('sha256').update(b).digest('hex').slice(0, 32);
+
+/** An 8 x 6 lossy WebP frame, as libwebp writes one. */
+const FRAME = Uint8Array.from(Buffer.from('UklGRjYAAABXRUJQVlA4ICoAAACQAQCdASoIAAYAAsBMJaACdLoAA5gA/uwmX18AU9Uf/OJfyR+gXaAAAAA=', 'base64'));
+/**
+ * A shared animation that passes its checks: a few real frames, then an XMP chunk of `pad` bytes, which readers skip, to
+ * make it as many chunks long as a test needs. `seed` makes each one different.
+ */
+function animFile(pad = 0, seed = 1): Uint8Array {
+  const anim = muxWebpAnimation([{ file: FRAME, ms: 100 }, { file: FRAME, ms: 100 + seed }], 8, 6) as Uint8Array;
+  const extra = Uint8Array.from([...ascii('XMP '), ...le32(pad), ...new Uint8Array(pad).fill(seed), ...(pad & 1 ? [0] : [])]);
+  const out = new Uint8Array(anim.length + extra.length);
+  out.set(anim);
+  out.set(extra, anim.length);
+  out.set(le32(out.length - 8), 4);
+  return out;
+}
+/** Every chunk of `bytes`, as the announcer sends them. */
+const chunksOf = (h: string, bytes: Uint8Array): ChunkMsg[] => {
+  const n = Math.ceil(bytes.length / EMOTE_CHUNK_BYTES);
+  return Array.from({ length: n }, (_, i) => chunkOf(h, i, n, bytes.subarray(i * EMOTE_CHUNK_BYTES, (i + 1) * EMOTE_CHUNK_BYTES)));
+};
 
 /** The member whose custom emote we are receiving. */
 const ANNOUNCER = 'aaaaaaaaaaaaaaaa';
@@ -43,7 +65,7 @@ function harness() {
   const routes = new Map<string, 'lan' | 'shared' | null>();
   const kinds = new Map<string, BlobKind>(); // what each cached hash was stored as
   const reads = { still: 0 };
-  const state = { enabled: true, tokens: 10, announced: [] as string[], sounds: [] as string[] };
+  const state = { enabled: true, tokens: 10, announced: [] as string[], sounds: [] as string[], anims: [] as string[] };
   const deps: EmoteTransferDeps = {
     now: Date.now,
     have: (h) => files.has(h) || cache.has(h),
@@ -53,6 +75,7 @@ function harness() {
     },
     announced: () => state.announced,
     announcedSounds: () => state.sounds,
+    announcedAnims: () => state.anims,
     enabled: () => state.enabled,
     put: (h, b, kind) => {
       cache.set(h, b);
@@ -70,6 +93,7 @@ function harness() {
     setTokens: (n: number) => (state.tokens = n),
     setAnnounced: (list: string[]) => (state.announced = list),
     setSounds: (list: string[]) => (state.sounds = list),
+    setAnims: (list: string[]) => (state.anims = list),
   };
 }
 
@@ -599,6 +623,115 @@ describe('EmoteTransfer: blob parts over relays', () => {
     h.t.onChunk(chunkOf(hash, 0, 2, image.subarray(0, EMOTE_CHUNK_BYTES)));
     h.t.onChunk(chunkOf(hash, 1, 2, image.subarray(EMOTE_CHUNK_BYTES)));
     expect(h.cache.get(hash)).toEqual(image);
+  });
+});
+
+describe('EmoteTransfer: shared animations', () => {
+  const stillHash = 'c'.repeat(32);
+
+  it('fetches a member’s animation once its anims message names it, in more chunks than a still or sound may have', () => {
+    const h = harness();
+    const anim = animFile(40_000); // 54 chunks
+    const animHash = hashOf(anim);
+    h.routes.set(ANNOUNCER, 'lan');
+    h.files.set(stillHash, still());
+    h.t.announced(ANNOUNCER, [stillHash]);
+    h.t.announcedAnims(ANNOUNCER, [[stillHash, animHash]]);
+    expect(h.out.filter((o) => o.body.t === 'want').map((o) => o.body.h)).toEqual([animHash]);
+    for (const c of chunksOf(animHash, anim)) h.t.onChunk(c);
+    expect(h.cache.get(animHash)).toEqual(anim);
+    expect(h.kinds.get(animHash)).toBe('anim');
+    expect(h.t.animFor(ANNOUNCER, stillHash)).toBe(animHash);
+  });
+
+  it('drops a finished animation that fails its checks, such as a still WebP', () => {
+    const h = harness();
+    const bytes = still(2000);
+    const fake = hashOf(bytes);
+    h.routes.set(ANNOUNCER, 'lan');
+    h.t.announcedAnims(ANNOUNCER, [[stillHash, fake]]);
+    for (const c of chunksOf(fake, bytes)) h.t.onChunk(c);
+    expect(h.cache.has(fake)).toBe(false);
+  });
+
+  it('keeps a member’s animations across presences for the stills it still announces', () => {
+    const h = harness();
+    h.routes.set(ANNOUNCER, 'lan');
+    const other = 'd'.repeat(32);
+    h.t.announced(ANNOUNCER, [stillHash, other]);
+    h.t.announcedAnims(ANNOUNCER, [[stillHash, 'e'.repeat(32)], [other, 'f'.repeat(32)]]);
+    h.t.announced(ANNOUNCER, [stillHash]);
+    expect(h.t.animFor(ANNOUNCER, stillHash)).toBe('e'.repeat(32));
+    expect(h.t.animFor(ANNOUNCER, other)).toBeNull();
+  });
+
+  it('assembles at most two animations at once; the third waits for the next presence', () => {
+    const h = harness();
+    h.routes.set(ANNOUNCER, 'lan');
+    const pairs: [string, string][] = [1, 2, 3].map((n) => [String(n).repeat(32), hashOf(animFile(0, n))]);
+    h.t.announced(ANNOUNCER, pairs.map(([s]) => s));
+    h.out.length = 0;
+    h.t.announcedAnims(ANNOUNCER, pairs);
+    expect(h.out.filter((o) => o.body.t === 'want').map((o) => o.body.h)).toEqual([pairs[0][1], pairs[1][1]]);
+    for (const c of chunksOf(pairs[0][1], animFile(0, 1))) h.t.onChunk(c);
+    h.out.length = 0;
+    h.t.announced(ANNOUNCER, pairs.map(([s]) => s)); // the next presence: one is here, so the third may start
+    expect(h.out.filter((o) => o.body.t === 'want').map((o) => o.body.h)).toEqual([pairs[2][1]]);
+  });
+
+  it('serves our own animation to a member who asks for it, and nothing we don’t announce', () => {
+    const h = harness();
+    const anim = animFile(5000);
+    const animHash = hashOf(anim);
+    h.files.set(animHash, anim);
+    h.routes.set(REQUESTER, 'lan');
+    h.t.onWant(wantOf(animHash, []));
+    vi.advanceTimersByTime(1000);
+    expect(h.out).toHaveLength(0);
+    h.setAnims([animHash]);
+    h.t.onWant(wantOf(animHash, []));
+    vi.advanceTimersByTime(2000);
+    expect(sentFile(h.out, animHash)).toEqual(anim);
+  });
+
+  it('asks again for at most 64 of an animation’s missing chunks at a time', () => {
+    const h = harness();
+    const anim = animFile(100_000); // 134 chunks
+    const animHash = hashOf(anim);
+    h.routes.set(ANNOUNCER, 'lan');
+    h.t.announcedAnims(ANNOUNCER, [[stillHash, animHash]]);
+    h.t.onChunk(chunksOf(animHash, anim)[0]);
+    h.out.length = 0;
+    vi.advanceTimersByTime(3200);
+    const want = h.out.find((o) => o.body.t === 'want');
+    expect((want?.body.need as number[]).length).toBe(EMOTE_NEED_MAX);
+    expect((want?.body.need as number[])[0]).toBe(1);
+  });
+
+  it('refuses blob parts past what a still or sound can have, and takes an animation’s', () => {
+    const h = harness();
+    h.routes.set(ANNOUNCER, 'shared');
+    const s = still(600);
+    h.t.announced(ANNOUNCER, [hashOf(s)]);
+    h.t.onBlob(blobOf(hashOf(s), 0, 4, s.subarray(0, 300)));
+    expect(h.t.stats.assembling).toBe(1); // only the prefetch's own assembly: the part was refused
+    const anim = animFile(20_000);
+    const animHash = hashOf(anim);
+    h.t.announcedAnims(ANNOUNCER, [[hashOf(s), animHash]]);
+    const n = Math.ceil(anim.length / BLOB_PART_BYTES);
+    expect(n).toBeGreaterThan(3);
+    for (let i = 0; i < n; i++) h.t.onBlob(blobOf(animHash, i, n, anim.subarray(i * BLOB_PART_BYTES, (i + 1) * BLOB_PART_BYTES)));
+    expect(h.cache.get(animHash)).toEqual(anim);
+  });
+
+  it('counts animations in the sync progress', () => {
+    const h = harness();
+    h.routes.set(ANNOUNCER, 'lan');
+    h.files.set(stillHash, still());
+    h.t.announced(ANNOUNCER, [stillHash]);
+    h.t.announcedAnims(ANNOUNCER, [[stillHash, hashOf(animFile())]]);
+    expect(h.t.progress()).toEqual({ have: 1, total: 2 });
+    expect(h.t.progressOf(ANNOUNCER)).toEqual({ have: 1, total: 2 });
   });
 });
 

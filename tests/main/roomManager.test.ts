@@ -990,6 +990,46 @@ describe('emote transfers', () => {
     expect(sentMessages('lan:a').find((m) => m.t === 'presence')).toMatchObject({ em: [hash], sn: [sound] });
   });
 
+  it('sends its shared animations beside every presence, and none while it has none', async () => {
+    const anim = 'abcdefabcdefabcdefabcdefabcdef00';
+    let pairs: [string, string][] = [];
+    room.quit();
+    room = new RoomManager({
+      transports: [lan], now: () => Date.now(), randomBytes: (n) => new Uint8Array(n).fill(0xab),
+      deriveKeys: async () => KEYS, appVersion: '0.5.1', profile: () => profile,
+      resolveTarget: () => null, announceEmotes: () => [hash], announceAnims: () => pairs,
+    });
+    await joinActive();
+    expect(sentMessages().some((m) => m.t === 'anims')).toBe(false);
+    pairs = [[hash, anim]];
+    lan.sent = [];
+    await vi.advanceTimersByTimeAsync(2100);
+    const sent = sentMessages('*');
+    const at = sent.findIndex((m) => m.t === 'presence');
+    expect(sent[at + 1]).toMatchObject({ t: 'anims', an: [[hash, anim]], peer: SELF });
+    // A new member gets them with the presence that answers theirs.
+    lan.sent = [];
+    new Remote('1111111111111111', 'lan:a', lan).presence();
+    expect(sentMessages('lan:a').map((m) => m.t)).toEqual(['presence', 'anims']);
+  });
+
+  it('hands a member’s animations on, and none from a stranger or while paused', async () => {
+    const anims: { peer: string; pairs: [string, string][] }[] = [];
+    room.on('anims', (peer: string, pairs: [string, string][]) => anims.push({ peer, pairs }));
+    await joinActive();
+    const alex = new Remote('1111111111111111', 'lan:a', lan);
+    alex.presence({ em: [hash] });
+    const pairs = [[hash, sound]];
+    lan.deliver('lan:a', alex.packet({ t: 'anims', an: pairs }));
+    expect(anims).toEqual([{ peer: alex.peer, pairs }]);
+    const stranger = new Remote('2222222222222222', 'lan:b', lan); // no presence: not a member
+    lan.deliver('lan:b', stranger.packet({ t: 'anims', an: pairs }));
+    expect(anims).toHaveLength(1);
+    room.setStatusFlags({ paused: true, roomMuted: false });
+    lan.deliver('lan:a', alex.packet({ t: 'anims', an: pairs }));
+    expect(anims).toHaveLength(1);
+  });
+
   it('tells the room how much of it is here, and shows each member’s own count', async () => {
     room.quit();
     let mine: { have: number; total: number } | null = { have: 3, total: 7 };

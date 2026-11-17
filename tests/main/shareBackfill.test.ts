@@ -13,7 +13,7 @@ function harness(list: CustomEmote[]) {
   const backfill = new ShareBackfill({
     now: () => state.now,
     emotes: () => state.emotes,
-    readSound: (e) => Promise.resolve(sounds.get(e) ?? null),
+    read: (e) => Promise.resolve(sounds.get(e) ?? null),
     encode: (e) => {
       if (state.canEncode) asked.push(e);
       return state.canEncode;
@@ -87,5 +87,35 @@ describe('ShareBackfill', () => {
     h.state.canEncode = true;
     await h.backfill.run();
     expect(h.asked).toEqual([id(1)]);
+  });
+});
+
+describe('ShareBackfill for animations', () => {
+  it('copies what `needs` says needs a copy, from what `read` gives it', async () => {
+    const list: CustomEmote[] = [
+      { id: id(1), name: 'gif', animated: true }, { id: id(2), name: 'done', animated: true, shareAnim: 'a'.repeat(32) },
+      { id: id(3), name: 'still', animated: false },
+    ];
+    let emotes = list;
+    const asked: [EmoteRef, Uint8Array][] = [];
+    const backfill = new ShareBackfill({
+      now: () => 0,
+      emotes: () => emotes,
+      needs: (c) => c.animated && !c.shareAnim,
+      read: (e) => Promise.resolve(Uint8Array.of(Number(e.slice(2, 3)))),
+      encode: (e, file) => {
+        asked.push([e, file]);
+        return true;
+      },
+      save: (e) => {
+        emotes = emotes.map((c) => (c.id === e ? { ...c, shareAnim: 'b'.repeat(32) } : c));
+        return Promise.resolve();
+      },
+    });
+    expect(backfill.missing()).toBe(1);
+    await backfill.run();
+    expect(asked).toEqual([[id(1), Uint8Array.of(1)]]);
+    await backfill.onResult(id(1), COPY);
+    expect(backfill.missing()).toBe(0);
   });
 });

@@ -1,7 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron';
 import type { EmoteRef } from '../shared/emotes';
 import {
-  OVERLAY_ASSETS, OVERLAY_CHANNELS, OVERLAY_EMOTED, OVERLAY_IDLE, OVERLAY_PINGED, OVERLAY_SHARE, type OverlayChannel, type OverlayEvents,
+  OVERLAY_ASSETS, OVERLAY_CHANNELS, OVERLAY_EMOTED, OVERLAY_IDLE, OVERLAY_PINGED, OVERLAY_SHARE, OVERLAY_SHARE_ANIM, type OverlayChannel,
+  type OverlayEvents,
 } from '../shared/ipc';
 import type { PingId } from '../shared/pings';
 
@@ -24,6 +25,10 @@ const api = {
   /** The copy for rooms of the sound main sent for `id`, or null when it couldn't be encoded. */
   reportShare(id: EmoteRef, share: Uint8Array | null): void {
     ipcRenderer.send(OVERLAY_SHARE, { id, share });
+  },
+  /** The copy for rooms of the animation main sent for `id`, or null when it couldn't be encoded. */
+  reportShareAnim(id: EmoteRef, share: Uint8Array | null): void {
+    ipcRenderer.send(OVERLAY_SHARE_ANIM, { id, share });
   },
   /** Nothing is on this overlay any more (true), or something is again (false). */
   reportIdle(idle: boolean): void {

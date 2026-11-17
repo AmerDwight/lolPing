@@ -1,4 +1,6 @@
-import { ANNOUNCED_MAX, ART_MAX_PX, HASH_RE, isClipMs, isEmoteFx, isEmoteRefShape, type EmoteRef } from './emotes';
+import {
+  ANNOUNCED_MAX, ART_MAX_PX, HASH_RE, SHARED_ANIM_MAX_BYTES, isClipMs, isEmoteFx, isEmoteRefShape, type EmoteRef,
+} from './emotes';
 import { isPingId, type PingId } from './pings';
 import { isTagColor, isTagRgb, type TagRgb } from './roomColors';
 
@@ -123,7 +125,7 @@ export interface ChunkMsg extends Base {
   b: string;
 }
 /**
- * Added after 0.6.0: one part `i` of `n` of the still or shared sound `h`, like a chunk but up to 6,000 bytes. Only relays
+ * Added after 0.6.0: one part `i` of `n` of the still, shared sound or shared animation `h`, like a chunk but up to 6,000 bytes. Only relays
  * carry it (it fits no LAN packet), and an older app never sees it: its relay transport drops content this long.
  */
 export interface BlobMsg extends Base {
@@ -133,10 +135,20 @@ export interface BlobMsg extends Base {
   n: number;
   b: string;
 }
+/**
+ * Added after 0.6.0, sent with every presence by a member whose wheel holds moving custom emotes: for each, the pair
+ * [still hash, hash of its shared animation]. It is a message of its own because a presence has no room left in its
+ * packet. Older apps drop it as an unknown type, and never ask for an animation.
+ */
+export interface AnimsMsg extends Base {
+  t: 'anims';
+  an: [string, string][];
+}
 export interface ByeMsg extends Base {
   t: 'bye';
 }
-export type RoomMessage = PresenceMsg | PingMsg | EmoteMsg | TextMsg | AliveMsg | VoteMsg | BallotMsg | WantMsg | ChunkMsg | BlobMsg | ByeMsg;
+export type RoomMessage =
+  | PresenceMsg | PingMsg | EmoteMsg | TextMsg | AliveMsg | VoteMsg | BallotMsg | WantMsg | ChunkMsg | BlobMsg | AnimsMsg | ByeMsg;
 
 // C0/C1 controls, zero-width characters, bidi marks, embeddings and isolates, BOM, line/paragraph separators,
 // soft hyphen, combining grapheme joiner, Arabic letter mark, Mongolian vowel separator and the Hangul fillers
@@ -175,7 +187,9 @@ export const EMOTE_CHUNK_B64_MAX = 1000;
 export const EMOTE_CHUNKS_MAX = 17;
 /** 22 chunks carry a full 16 KB shared sound. An app before sounds travelled drops a chunk numbered past a still's 17. */
 export const SOUND_CHUNKS_MAX = 22;
-const CHUNKS_MAX = Math.max(EMOTE_CHUNKS_MAX, SOUND_CHUNKS_MAX);
+/** 350 chunks carry a full 256 KB shared animation. An app before animations travelled drops a chunk numbered past 22. */
+export const ANIM_CHUNKS_MAX = Math.ceil(SHARED_ANIM_MAX_BYTES / 750);
+const CHUNKS_MAX = Math.max(EMOTE_CHUNKS_MAX, SOUND_CHUNKS_MAX, ANIM_CHUNKS_MAX);
 /** Chunk indexes in a `want`'s `need`: at most this many entries, each below the largest chunk count. */
 export const EMOTE_NEED_MAX = 64;
 /** The most files a presence's `sy` may count. */
@@ -183,6 +197,8 @@ export const SYNC_FILES_MAX = 999;
 /** Blob `b` is at most this many base64 characters (6,000 bytes); 3 parts carry a full 16 KB shared sound. */
 export const BLOB_B64_MAX = 8000;
 export const BLOB_PARTS_MAX = 3;
+/** 44 parts carry a full 256 KB shared animation. An app before animations travelled drops a part numbered past 3. */
+export const ANIM_BLOB_PARTS_MAX = Math.ceil(SHARED_ANIM_MAX_BYTES / 6000);
 const B64_RE = /^[A-Za-z0-9+/]+={0,2}$/;
 /** 32 raw bytes in base64. */
 const PK_RE = /^[A-Za-z0-9+/]{43}=$/;
@@ -208,6 +224,21 @@ function emList(raw: unknown): string[] {
 function snList(raw: unknown, emRaw: unknown, em: readonly string[]): string[] {
   if (!Array.isArray(raw) || !Array.isArray(emRaw) || emRaw.length !== em.length || raw.length !== em.length) return em.map(() => '');
   return raw.map((v) => (typeof v === 'string' && HASH_RE.test(v) ? v : ''));
+}
+
+/** The announced animations, rebuilt: pairs of two hashes, one pair per still, the first ANNOUNCED_MAX. Malformed pairs are left out. */
+function anList(raw: unknown): [string, string][] {
+  if (!Array.isArray(raw)) return [];
+  const out: [string, string][] = [];
+  for (const v of raw) {
+    if (!Array.isArray(v) || v.length !== 2) continue;
+    const [still, anim] = v as unknown[];
+    if (typeof still !== 'string' || typeof anim !== 'string' || !HASH_RE.test(still) || !HASH_RE.test(anim)) continue;
+    if (out.some(([s]) => s === still)) continue;
+    out.push([still, anim]);
+    if (out.length >= ANNOUNCED_MAX) break;
+  }
+  return out;
 }
 
 /** The switched-off features, rebuilt: known ones only, once each. Anything else means none. */
@@ -299,9 +330,13 @@ export function validateMessage(raw: unknown): RoomMessage | null {
     case 'blob': {
       const { h, i, n, b } = raw;
       if (typeof h !== 'string' || !HASH_RE.test(h)) return null;
-      if (!isUint(n) || (n as number) < 1 || (n as number) > BLOB_PARTS_MAX || !isUint(i) || (i as number) >= (n as number)) return null;
+      if (!isUint(n) || (n as number) < 1 || (n as number) > ANIM_BLOB_PARTS_MAX || !isUint(i) || (i as number) >= (n as number)) return null;
       if (typeof b !== 'string' || b.length > BLOB_B64_MAX || b.length % 4 !== 0 || !B64_RE.test(b)) return null;
       return { t, ...base, h, i: i as number, n: n as number, b };
+    }
+    case 'anims': {
+      const an = anList(raw.an);
+      return an.length > 0 ? { t, ...base, an } : null;
     }
     case 'bye':
       return { t, ...base };

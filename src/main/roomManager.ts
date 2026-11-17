@@ -112,6 +112,8 @@ export interface RoomDeps {
   announceEmotes(): readonly string[];
   /** For each of those hashes, in order, the hash of its shared sound or '' for none. Left out by tools that share none. */
   announceSounds?(): readonly string[];
+  /** [still, shared animation] pairs for the moving ones among those hashes, sent beside each presence. Left out by tools that share none. */
+  announceAnims?(): readonly (readonly [string, string])[];
   /** How many of the files the room announces to us are here; null when we fetch none. Left out by tools that fetch none. */
   syncProgress?(): { have: number; total: number } | null;
 }
@@ -145,7 +147,8 @@ interface Member {
  * The room: who is in it, what we send, and what we let through. Talks to the network only through transports,
  * which carry sealed packets. Events: 'state' (RoomStateCore), 'remotePing' (RemotePing), 'remoteEmote' (RemoteEmote), 'toast' (RoomToast),
  * 'remoteText' (RemoteText: text and alive lines), 'vote' (VoteMsg), 'ballot' (BallotMsg), 'saveCode' (canonical code | null: what "rejoin last room" should remember), 'emotes' (peer, announced hashes),
- * 'want' (WantMsg, and 'lan' or 'shared': how it arrived), 'chunk' (ChunkMsg), 'blob' (BlobMsg) and 'memberGone' (peer), which EmoteTransfer answers.
+ * 'anims' (peer, [still, animation] pairs), 'want' (WantMsg, and 'lan' or 'shared': how it arrived), 'chunk' (ChunkMsg), 'blob' (BlobMsg)
+ * and 'memberGone' (peer), which EmoteTransfer answers.
  */
 export class RoomManager extends EventEmitter {
   /**
@@ -562,6 +565,13 @@ export class RoomManager extends EventEmitter {
       this.emit('want', msg, t.shared ? 'shared' : 'lan');
       return;
     }
+    // Like a presence's announcement, prefetching starts from it whatever we have muted; a muted member's parts are
+    // dropped as they arrive. A paused lolPing neither fetches nor serves.
+    if (msg.t === 'anims') {
+      if (this.paused || m.needsUpdate || !this.transferLimiter.allow(m.peer, TRANSFER_RATE)) return;
+      this.emit('anims', m.peer, msg.an.map(([still, anim]) => [still, anim]));
+      return;
+    }
     // A ballot is the one answer a vote waits for, so a muted member's still counts and so does our own pause;
     // the vote unit decides. Only a member we can't read, and a ballot flood, are shut out.
     if (msg.t === 'ballot') {
@@ -644,7 +654,7 @@ export class RoomManager extends EventEmitter {
     if (!this.answered.has(key)) {
       this.answered.add(key);
       if (t.shared) this.announce(t); // everyone hears it anyway, so it's an ordinary presence
-      else t.sendTo(key, this.presencePacket());
+      else for (const packet of this.presencePackets()) t.sendTo(key, packet);
     }
     if (isNew && !returning && this.phase === 'active') {
       this.emit('toast', { kind: 'joined', name: m.name } satisfies RoomToast);
@@ -758,8 +768,15 @@ export class RoomManager extends EventEmitter {
 
   private sendPresence(t: Transport): void {
     this.cancelShared(t);
-    this.spread(t, this.presencePacket());
+    for (const packet of this.presencePackets()) this.spread(t, packet);
     this.lastPresence[t.kind] = this.deps.now();
+  }
+
+  /** The presence, and after it the shared animations it doesn't have room for, when there are any. */
+  private presencePackets(): Buffer[] {
+    const an = this.deps.announceAnims?.() ?? [];
+    const presence = this.presencePacket();
+    return an.length > 0 ? [presence, this.seal({ t: 'anims', an: an.map(([still, anim]) => [still, anim]) })] : [presence];
   }
 
   private cancelShared(t: Transport): void {

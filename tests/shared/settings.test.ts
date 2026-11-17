@@ -345,6 +345,16 @@ describe('emote settings', () => {
     ]);
   });
 
+  it('custom emotes keep the hash of a shared animation only on art that moves', () => {
+    const share = 'b'.repeat(32);
+    const list = normalizeSettings({
+      customEmotes: [
+        { ...entry('a', 'Mine', true), shareAnim: share }, { ...entry('c'), shareAnim: share }, { ...entry('d', 'Mine', true), shareAnim: 'nope' },
+      ],
+    }).customEmotes;
+    expect(list).toEqual([{ ...entry('a', 'Mine', true), shareAnim: share }, entry('c'), entry('d', 'Mine', true)]);
+  });
+
   it('customEmoteScale clamps to 10–300% in steps of 5, and is 100% by default', () => {
     expect(normalizeSettings({}).customEmoteScale).toBe(100);
     expect(normalizeSettings({ customEmoteScale: 1 }).customEmoteScale).toBe(10);
