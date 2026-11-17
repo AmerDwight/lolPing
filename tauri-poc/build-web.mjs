@@ -16,6 +16,8 @@ if (!existsSync(join(renderer, 'overlay', 'index.html'))) {
   process.exit(1);
 }
 const dist = join(here, 'dist');
+// The platform the app is built for: this one, or LOLPING_POC_PLATFORM when building Windows from Linux.
+const platform = process.env.LOLPING_POC_PLATFORM ?? process.platform;
 rmSync(dist, { recursive: true, force: true });
 cpSync(renderer, dist, { recursive: true });
 
@@ -34,10 +36,9 @@ for (const page of readdirSync(dist)) {
 }
 
 // Imported and friends' emotes are lolping://emotes/<file> (src/shared/emotes.ts). WebView2 can't load a custom scheme
-// by its own name: Tauri serves it as http://lolping.localhost/emotes/<file> there. Tauri builds only for the platform
-// they run on, so the build's platform is the app's.
+// by its own name: Tauri serves it as http://lolping.localhost/emotes/<file> there.
 const EMOTE_URL = '"lolping://emotes/"';
-if (process.platform === 'win32') {
+if (platform === 'win32') {
   const assets = join(dist, 'assets');
   let found = 0;
   for (const name of readdirSync(assets).filter((n) => n.endsWith('.js'))) {
@@ -117,14 +118,14 @@ writeFileSync(join(dist, 'core', 'index.html'), `<!doctype html>
 </html>
 `);
 
-// The preloads read process.platform, which is this build's platform.
+// The preloads read process.platform.
 for (const name of ['overlay', 'settings', 'text', 'panel', 'teammate']) {
   await build({
     ...common,
     entryPoints: [join(root, 'src', 'preload', `${name}.ts`)],
     outfile: join(dist, '__preload', `${name}.js`),
     plugins: [standIns('electron/renderer.ts')],
-    define: { 'process.platform': JSON.stringify(process.platform) },
+    define: { 'process.platform': JSON.stringify(platform) },
   });
 }
 mkdirSync(join(dist, '__preload'), { recursive: true });

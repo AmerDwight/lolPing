@@ -36,6 +36,28 @@ cd tauri-poc/src-tauri && cargo build --release
 The portable build is `tauri-poc/src-tauri/target/release/lolping-tauri-poc.exe`. It needs the WebView2 runtime,
 which Windows 11 includes.
 
+### Windows build from Linux
+
+For testing when no Windows machine or runner is at hand. It needs MinGW-w64 (`x86_64-w64-mingw32-g++`) and the
+Rust library source for the installed toolchain in `$(rustc --print sysroot)/lib/rustlib/src/rust/library`, since
+the Windows standard library is built from source here.
+
+```bash
+cd native/hook-helper
+x86_64-w64-mingw32-g++ -std=c++20 -O2 -DUNICODE -D_UNICODE -municode -static -s src/main_win.cpp src/hooks_win.cpp \
+  src/simulate.cpp src/commands.cpp src/output.cpp src/json.cpp src/decision.cpp -o /tmp/hook-helper.exe -luser32
+cd ../..
+npx electron-vite build
+LOLPING_POC_PLATFORM=win32 node tauri-poc/build-web.mjs
+cd tauri-poc/src-tauri
+RUSTC_BOOTSTRAP=1 CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc \
+  LOLPING_POC_HELPER=/tmp/hook-helper.exe \
+  cargo build --release --locked -Zbuild-std=std,panic_abort --target x86_64-pc-windows-gnu
+```
+
+Unlike the MSVC build, this one loads `WebView2Loader.dll` at start. The build puts it next to the executable in
+`target/x86_64-pc-windows-gnu/release`, and the two files go together.
+
 ## Test
 
 `.github/workflows/tauri-poc.yml` builds it on a Windows runner and runs:
