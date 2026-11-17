@@ -35,24 +35,6 @@ for (const page of readdirSync(dist)) {
   writeFileSync(file, patched);
 }
 
-// Imported and friends' emotes are lolping://emotes/<file> (src/shared/emotes.ts). WebView2 can't load a custom scheme
-// by its own name: Tauri serves it as http://lolping.localhost/emotes/<file> there.
-const EMOTE_URL = '"lolping://emotes/"';
-if (platform === 'win32') {
-  const assets = join(dist, 'assets');
-  let found = 0;
-  for (const name of readdirSync(assets).filter((n) => n.endsWith('.js'))) {
-    const js = readFileSync(join(assets, name), 'utf8');
-    if (!js.includes(EMOTE_URL)) continue;
-    found++;
-    writeFileSync(join(assets, name), js.replaceAll(EMOTE_URL, '"http://lolping.localhost/emotes/"'));
-  }
-  if (found === 0) {
-    console.error(`No ${EMOTE_URL} in out/renderer/assets: emotes from the data folder would not load.`);
-    process.exit(1);
-  }
-}
-
 const NODE = {
   'node:events': 'node/events.ts', events: 'node/events.ts',
   'node:buffer': 'node/buffer.ts',
@@ -129,4 +111,24 @@ for (const name of ['overlay', 'settings', 'text', 'panel', 'teammate']) {
   });
 }
 mkdirSync(join(dist, '__preload'), { recursive: true });
+
+// Imported and friends' emotes are lolping://emotes/<file> (src/shared/emotes.ts). The pages build these URLs, and so
+// does the main process for emotes it puts on screen. WebView2 can't load a custom scheme by its own name: Tauri serves
+// it as http://lolping.localhost/emotes/<file> there.
+if (platform === 'win32') {
+  const EMOTE_URL = '"lolping://emotes/"';
+  const rewrite = (file) => {
+    const js = readFileSync(file, 'utf8');
+    if (!js.includes(EMOTE_URL)) return false;
+    writeFileSync(file, js.replaceAll(EMOTE_URL, '"http://lolping.localhost/emotes/"'));
+    return true;
+  };
+  for (const dir of ['assets', 'core', '__preload']) {
+    const hits = readdirSync(join(dist, dir)).filter((n) => n.endsWith('.js') && rewrite(join(dist, dir, n)));
+    if (hits.length === 0 && dir !== '__preload') {
+      console.error(`No ${EMOTE_URL} in tauri-poc/dist/${dir}: emotes from the data folder would not load.`);
+      process.exit(1);
+    }
+  }
+}
 console.log('tauri-poc/dist is ready');
