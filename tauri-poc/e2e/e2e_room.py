@@ -1,7 +1,8 @@
 """lolPing on Tauri and lolPing on Electron in the same room, on one Windows desktop, with real input.
 
 The Tauri build creates the room from its settings page, the Electron build joins with the code, then each places a
-ping through SendInput and the test looks for it on the other's overlay. A paused app drops room pings too, so the two
+ping through SendInput and the test looks for it on the other's overlay. Then each imports a custom emote, and the
+other's overlay must load it from its own data folder once the room has synced it. A paused app drops room pings too, so the two
 apps get different trigger keys instead: Alt for Tauri, Shift for Electron. Before that the test changes a setting on
 the Tauri settings page and reads it back from settings.json.
 
@@ -157,6 +158,30 @@ def shot(name):
     ImageGrab.grab().save(os.path.join(args.out, f'{name}.png'))
 
 
+# A 96x96 WebP drawn in the page, imported the way the settings window imports a picked image.
+IMPORT_EMOTE = """(async () => {
+  const c = document.createElement('canvas');
+  c.width = c.height = 96;
+  const g = c.getContext('2d');
+  g.fillStyle = '%s';
+  g.fillRect(0, 0, 96, 96);
+  g.fillStyle = '#fff';
+  g.fillRect(24, 24, 48, 48);
+  const blob = await new Promise((r) => c.toBlob(r, 'image/webp', 0.9));
+  return window.settingsApi.importEmote({ name: 'e2e', still: new Uint8Array(await blob.arrayBuffer()) });
+})()"""
+
+# What the overlay does with an emote: an <img> for the still, fetch() for sounds. Both must work from its own origin.
+LOAD_EMOTE = """(async () => {
+  const url = %s;
+  const res = await fetch(url, { cache: 'no-store' });
+  if (!res.ok) return { status: res.status };
+  const img = new Image();
+  img.src = url;
+  await img.decode();
+  return { status: res.status, type: res.headers.get('content-type'), w: img.naturalWidth };
+})()"""
+
 COUNT_PINGS = """(() => {
   if (!window.__seen) {
     window.__seen = { pings: 0 };
@@ -245,6 +270,32 @@ try:
         drawn, got = ping_from(SHIFT, e_ov, t_ov, 'electron', 700)
         check('electron_draws_own_ping', drawn)
         check('electron_ping_reaches_tauri', got)
+
+        # --- custom emotes both ways ---------------------------------------------------------------------------------
+        e_imp = e_set.eval(IMPORT_EMOTE % '#e0457b')
+        t_imp = t_set.eval(IMPORT_EMOTE % '#2f8fd8')
+        check('electron_imports_emote', e_imp and e_imp.get('ok'), json.dumps(e_imp))
+        check('tauri_imports_emote', t_imp and t_imp.get('ok'), json.dumps(t_imp))
+        tauri_url = lambda ref: json.dumps(f'http://lolping.localhost/emotes/{ref[2:]}.webp')
+        electron_url = lambda ref: json.dumps(f'lolping://emotes/{ref[2:]}.webp')
+
+        def loads(ov, url):
+            r = ov.eval(LOAD_EMOTE % url)
+            return r if r and r.get('w') == 96 else None
+
+        if t_imp and t_imp.get('ok'):
+            r = wait(lambda: loads(t_ov, tauri_url(t_imp['id'])), 10, 0.5)
+            check('tauri_overlay_loads_own_emote', r, json.dumps(r))
+            r = wait(lambda: loads(e_ov, electron_url(t_imp['id'])), 90, 1)
+            check('electron_overlay_loads_emote_from_tauri', r, json.dumps(r))
+        if e_imp and e_imp.get('ok'):
+            r = wait(lambda: loads(t_ov, tauri_url(e_imp['id'])), 90, 1)
+            check('tauri_overlay_loads_emote_from_electron', r, json.dumps(r))
+            if not r:
+                try:
+                    print('last try:', t_ov.eval(LOAD_EMOTE % tauri_url(e_imp['id'])))
+                except RuntimeError as e:
+                    print('last try:', e)
     t_set.eval('window.settingsApi.leaveRoom()')
     e_set.eval('window.settingsApi.leaveRoom()')
     time.sleep(1)
