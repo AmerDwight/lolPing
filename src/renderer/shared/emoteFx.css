@@ -1,9 +1,11 @@
 /* The emote box and the 13 signature effects a custom image plays in it, shared by the overlay stage and the effect
-   picker, which build the same nodes (see shared/emoteFx.ts). --size is the art's width, --dur the 3 s it stays. */
-.emote { position: absolute; width: 0; height: 0; pointer-events: none; --size: 150px; --dur: 3s; }
-/* A custom emote (or the placeholder) gets this envelope: pop in, bob, then shrink and fade over the last 0.35 s. */
+   picker, which build the same nodes (see shared/emoteFx.ts). --size is the art's longer side, --dur the 3 s it stays (or a
+   clip's length). */
+.emote { position: absolute; width: 0; height: 0; pointer-events: none; --size: 150px; --dur: 3s; --w: var(--size); --h: var(--size); }
+/* A custom emote (or the placeholder) gets this envelope: pop in, bob, then shrink and fade over the last 0.35 s. Its box
+   is --w x --h, the art's own size when it has one; --size is the longer side, which the effects move by. */
 .emote .fx {
-  position: absolute; left: calc(var(--size) * -0.5); top: calc(var(--size) * -0.5); width: var(--size); height: var(--size);
+  position: absolute; left: calc(var(--w) * -0.5); top: calc(var(--h) * -0.5); width: var(--w); height: var(--h);
   animation: emoteIn .25s ease-out both, emoteBob 1.4s ease-in-out infinite, emoteOut .35s ease-in calc(var(--dur) - .35s) forwards;
 }
 .emote .fx img { display: block; width: 100%; height: 100%; object-fit: contain; filter: drop-shadow(0 0 8px #fff8); }

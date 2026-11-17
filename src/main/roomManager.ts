@@ -68,6 +68,10 @@ export interface RemoteEmote {
   ref: EmoteRef;
   /** The sender's chosen effect for a custom emote; undefined is the plain pop (an app before 0.5.2, or none stored). */
   fx?: number;
+  /** Its size on the sender's screen and a clip's length, when their app sends them. */
+  w?: number;
+  h?: number;
+  du?: number;
   /** The sender, so their earlier emote can be replaced: everyone has one on screen at a time. */
   peer: string;
   tag: MemberTag;
@@ -242,8 +246,10 @@ export class RoomManager extends EventEmitter {
   }
 
   /** `fx` is the effect stored on the emote's entry here; absent (the plain pop) leaves the field out for the older peers. */
-  sendEmote(e: EmoteRef, shared: { d: number; x: number; y: number }, fx?: number): void {
-    this.sendShared({ t: 'emote', e, ...shared, ...(fx !== undefined ? { fx } : {}) });
+  /** `look` is a custom emote's size on our screen and a clip's length, which friends show it with. */
+  sendEmote(e: EmoteRef, shared: { d: number; x: number; y: number }, fx?: number, look: { w?: number; h?: number; du?: number } = {}): void {
+    const size = look.w !== undefined && look.h !== undefined ? { w: look.w, h: look.h } : {};
+    this.sendShared({ t: 'emote', e, ...shared, ...(fx !== undefined ? { fx } : {}), ...size, ...(look.du !== undefined ? { du: look.du } : {}) });
   }
 
   sendText(text: string, shared: { d: number; x: number; y: number }): void {
@@ -576,7 +582,10 @@ export class RoomManager extends EventEmitter {
     const [x, y] = [msg.x * target.width, msg.y * target.height];
     const tag: MemberTag = { name: m.name, color: m.color, rgb: m.rgb };
     if (msg.t === 'ping') this.emit('remotePing', { displayId: target.displayId, x, y, id: msg.ping, tag } satisfies RemotePing);
-    else if (msg.t === 'emote') this.emit('remoteEmote', { displayId: target.displayId, x, y, ref: msg.e, fx: msg.fx, peer: m.peer, tag } satisfies RemoteEmote);
+    else if (msg.t === 'emote') {
+      const look = { ...(msg.w !== undefined && msg.h !== undefined ? { w: msg.w, h: msg.h } : {}), ...(msg.du !== undefined ? { du: msg.du } : {}) };
+      this.emit('remoteEmote', { displayId: target.displayId, x, y, ref: msg.e, fx: msg.fx, ...look, peer: m.peer, tag } satisfies RemoteEmote);
+    }
     else if (msg.t === 'text') {
       this.emit('remoteText', { kind: 'text', peer: m.peer, tag, displayId: target.displayId, x, y, text: msg.text } satisfies RemoteText);
     } else if (msg.t === 'alive') {

@@ -1,10 +1,10 @@
-import { EMOTE_DURATION_S, emoteAnimUrl, emoteIconUrl, type EmoteArt } from '../../shared/emotes';
+import { CUSTOM_EMOTE_URL, EMOTE_DURATION_S, emoteAnimUrl, emoteIconUrl, type EmoteArt } from '../../shared/emotes';
 import type { PingTag } from '../../shared/ipc';
 import { tagColorCss } from '../../shared/roomColors';
 import { bubble, emoteFxContent, envelope } from '../shared/emoteFx';
 
 export interface EmoteOptions {
-  /** How wide the emote's art appears. */
+  /** How wide the emote's art appears, unless the art has a size of its own. */
   sizePx: number;
   /** A room member's name under the emote. */
   tag?: PingTag;
@@ -18,12 +18,20 @@ const KEPT_DUR_S = 86_400;
 interface Live {
   root: HTMLElement;
   timer: ReturnType<typeof setTimeout>;
-  /** The object URL of a bundled emote's image, once its Blob has arrived. */
+  /** The object URL of a bundled emote's image or a moving custom one, once its Blob has arrived. */
   url: string | null;
   gone: boolean;
   /** A kept bundled emote's change from its animation to its still, once the animation is over. */
   settle?: () => void;
 }
+
+/** The art's box on screen: its own size when it has one, else the emote size setting's square. */
+function box(art: EmoteArt, sizePx: number): { w: number; h: number } {
+  return art.kind === 'custom' && art.w !== undefined && art.h !== undefined ? { w: art.w, h: art.h } : { w: sizePx, h: sizePx };
+}
+
+/** Seconds on screen: a clip stays until it has played, everything else EMOTE_DURATION_S. */
+const lifeS = (art: EmoteArt): number => (art.kind === 'custom' && art.dur !== undefined ? Math.max(EMOTE_DURATION_S, art.dur) : EMOTE_DURATION_S);
 
 const div = (cls: string): HTMLDivElement => {
   const d = document.createElement('div');
@@ -39,7 +47,10 @@ function image(cls = ''): HTMLImageElement {
   return el;
 }
 
-/** The emotes on this overlay: at most one per owner ('self', 'preview' or a room member's id), each gone after EMOTE_DURATION_S. */
+/**
+ * The emotes on this overlay: at most one per owner ('self', 'preview' or a room member's id), each gone after
+ * EMOTE_DURATION_S, or a clip's length when that is longer.
+ */
 export class EmoteStage {
   private readonly live = new Map<string, Live>();
   private readonly blobs = new Map<string, Promise<Blob>>();
@@ -53,15 +64,20 @@ export class EmoteStage {
     if (owner === 'mate') root.dataset.owner = owner; // 'mate:fade' finds the teammate's marks by it, pings and emotes alike
     root.style.left = `${x}px`;
     root.style.top = `${y}px`;
-    root.style.setProperty('--size', `${opts.sizePx}px`);
-    root.style.setProperty('--dur', `${opts.keep ? KEPT_DUR_S : EMOTE_DURATION_S}s`);
+    const { w, h } = box(art, opts.sizePx);
+    root.style.setProperty('--size', `${Math.max(w, h)}px`); // what the effects move by
+    root.style.setProperty('--w', `${w}px`);
+    root.style.setProperty('--h', `${h}px`);
+    const life = lifeS(art);
+    root.style.setProperty('--dur', `${opts.keep ? KEPT_DUR_S : life}s`);
     const live: Live = {
       root, url: null, gone: false,
-      timer: setTimeout(() => (opts.keep ? live.settle?.() : this.end(owner, live)), EMOTE_DURATION_S * 1000 + 150),
+      timer: setTimeout(() => (opts.keep ? live.settle?.() : this.end(owner, live)), life * 1000 + 150),
     };
     this.live.set(owner, live);
 
     if (art.kind === 'bundled') this.showBundled(live, art.slug, opts.keep === true);
+    else if (art.kind === 'custom' && art.animated) this.showMoving(live, art.fx, art.url);
     else if (art.kind === 'custom') root.append(emoteFxContent(art.fx, art.url));
     else root.append(envelope(bubble(), 0));
 
@@ -72,6 +88,11 @@ export class EmoteStage {
       root.append(tag);
     }
     this.layer.append(root);
+  }
+
+  /** Drops the imported emotes' fetched animations: one may have been removed and added again under the same URL. */
+  forgetCustom(): void {
+    for (const url of [...this.blobs.keys()]) if (url.startsWith(CUSTOM_EMOTE_URL)) this.blobs.delete(url);
   }
 
   /** Removes the owner's emote at once, if it has one. */
@@ -106,7 +127,7 @@ export class EmoteStage {
         img.src = emoteIconUrl(slug);
       };
     }
-    this.blob(slug).then(
+    this.blob(emoteAnimUrl(slug)).then(
       (blob) => {
         if (live.gone || swapped) return; // a late blob must not bring the animation back over the still
         live.url = URL.createObjectURL(blob);
@@ -116,14 +137,32 @@ export class EmoteStage {
     );
   }
 
-  private blob(slug: string): Promise<Blob> {
-    let blob = this.blobs.get(slug);
+  /**
+   * A moving custom emote, from frame 0 like a bundled one: a clip's picture has to start with its sound. Should the
+   * fetch fail, the URL itself is tried, which shows the placeholder when the file is missing.
+   */
+  private showMoving(live: Live, fx: number, url: string): void {
+    this.blob(url).then(
+      (blob) => {
+        if (live.gone) return;
+        live.url = URL.createObjectURL(blob);
+        live.root.prepend(emoteFxContent(fx, live.url));
+      },
+      () => {
+        if (!live.gone) live.root.prepend(emoteFxContent(fx, url));
+      },
+    );
+  }
+
+  /** The file at `url`, fetched once and kept as a Blob. */
+  private blob(url: string): Promise<Blob> {
+    let blob = this.blobs.get(url);
     if (!blob) {
-      blob = this.fetchBlob(emoteAnimUrl(slug));
-      this.blobs.set(slug, blob);
+      blob = this.fetchBlob(url);
+      this.blobs.set(url, blob);
       const fetched = blob;
       blob.catch(() => {
-        if (this.blobs.get(slug) === fetched) this.blobs.delete(slug); // try again next time
+        if (this.blobs.get(url) === fetched) this.blobs.delete(url); // try again next time
       });
     }
     return blob;

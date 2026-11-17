@@ -65,10 +65,28 @@ describe('EmoteLibrary', () => {
     const a = gif();
     const result = await lib.save({ name: ' ​Party\u0007 cat with a very long name indeed ', still: s, anim: a }, []);
     const hash = hashOf(s);
-    expect(result).toEqual({ ok: true, emote: { id: `c:${hash}`, name: 'Party cat with a very lo', animated: true } });
+    expect(result).toEqual({ ok: true, emote: { id: `c:${hash}`, name: 'Party cat with a very lo', animated: true, w: 200, h: 200 } });
     expect(files(lib.dir)).toEqual([`${hash}.anim.gif`, `${hash}.webp`]);
     expect(readFileSync(join(lib.dir, `${hash}.webp`))).toEqual(Buffer.from(s));
     expect(readFileSync(join(lib.dir, `${hash}.anim.gif`))).toEqual(Buffer.from(a));
+  });
+
+  it('keeps the size of the full-size art on the entry, or the still\'s when there is none', async () => {
+    const lib = new EmoteLibrary(join(tempDir(), 'emotes'));
+    const big = await lib.save({ name: 'big', still: still(160, 90, 600, 1), anim: stillExtended(0x10, 640, 360, 900) }, []);
+    expect(big).toMatchObject({ ok: true, emote: { animated: false, w: 640, h: 360 } });
+    const small = await lib.save({ name: 'small', still: still(120, 80, 600, 2) }, []);
+    expect(small).toMatchObject({ ok: true, emote: { animated: false, w: 120, h: 80 } });
+    expect(files(lib.dir)).toContain(`${hashOf(still(160, 90, 600, 1))}.anim.webp`);
+  });
+
+  it('keeps a clip\'s length only for art that moves', async () => {
+    const lib = new EmoteLibrary(join(tempDir(), 'emotes'));
+    const clip = await lib.save({ name: 'clip', still: still(160, 90, 600, 1), anim: webpAnim(320, 180), clip: 4200 }, []);
+    expect(clip).toMatchObject({ ok: true, emote: { animated: true, clip: 4200, w: 320, h: 180 } });
+    const flat = await lib.save({ name: 'flat', still: still(160, 90, 600, 2), anim: stillExtended(0, 320, 180), clip: 4200 }, []);
+    expect(flat).toMatchObject({ ok: true, emote: { animated: false } });
+    expect(flat.ok && 'clip' in flat.emote).toBe(false);
   });
 
   it('saves a still on its own, and a WebP animation as .anim.webp', async () => {
@@ -295,6 +313,16 @@ describe('emoteFileFrom', () => {
     expect(emoteFileFrom({ name: 'x', still: Buffer.from(s) })).not.toBeNull(); // a Buffer is a Uint8Array
   });
 
+  it('keeps a clip length only with art, and only a whole one within a clip\'s limits', () => {
+    const s = still();
+    const a = webpAnim();
+    expect(emoteFileFrom({ name: 'x', still: s, anim: a, clip: 3000 })).toEqual({ name: 'x', still: s, anim: a, clip: 3000 });
+    expect(emoteFileFrom({ name: 'x', still: s, clip: 3000 })).toEqual({ name: 'x', still: s });
+    for (const clip of [10, 9000, 2.5, '3000', null]) {
+      expect(emoteFileFrom({ name: 'x', still: s, anim: a, clip }), String(clip)).toEqual({ name: 'x', still: s, anim: a });
+    }
+  });
+
   it('refuses anything else', () => {
     for (const raw of [null, 'x', 5, [], { still: still() }, { name: 'x' }, { name: 'x', still: [1, 2] },
       { name: 'x', still: still(), anim: 'gif' }, { name: 'x', still: still(), anim: null }, { name: 'x', still: new ArrayBuffer(4) }]) {
@@ -303,20 +331,50 @@ describe('emoteFileFrom', () => {
   });
 });
 
+describe('EmoteLibrary.measure', () => {
+  it('gives an entry from an older version the size of its art, and leaves the others as they are', async () => {
+    const lib = new EmoteLibrary(join(tempDir(), 'emotes'));
+    mkdirSync(lib.dir, { recursive: true });
+    const [moving, plain, sized, lost] = [1, 2, 3, 4].map((n) => entry(n));
+    const hashOf = (c: CustomEmote): string => c.id.slice(2);
+    writeFileSync(join(lib.dir, `${hashOf(moving)}.webp`), still(160, 100));
+    writeFileSync(join(lib.dir, `${hashOf(moving)}.anim.gif`), gif(480, 300));
+    writeFileSync(join(lib.dir, `${hashOf(plain)}.webp`), still(150, 90));
+    const out = await lib.measure([{ ...moving, animated: true }, plain, { ...sized, w: 10, h: 20 }, lost]);
+    expect(out).toEqual([{ ...moving, animated: true, w: 480, h: 300 }, { ...plain, w: 150, h: 90 }, { ...sized, w: 10, h: 20 }, lost]);
+  });
+});
+
 describe('resolveEmoteArt', () => {
   const hash = 'ab'.repeat(16);
   const moving: CustomEmote = { id: `c:${hash}`, name: 'm', animated: true };
   const plain: CustomEmote = { id: `c:${'cd'.repeat(16)}`, name: 'p', animated: false };
 
-  it('plays our own animation, but shows a room member’s emote as its still', () => {
+  it('shows our own emotes as their full-size art, but a room member’s emote as its still', () => {
     expect(resolveEmoteArt(moving.id, [moving], false)).toEqual({ kind: 'custom', url: `lolping://emotes/${hash}.anim`, animated: true, fx: 0 });
     expect(resolveEmoteArt(moving.id, [moving], true)).toEqual({ kind: 'custom', url: `lolping://emotes/${hash}.webp`, animated: false, fx: 0 });
-    expect(resolveEmoteArt(plain.id, [plain], false)).toEqual({ kind: 'custom', url: `lolping://emotes/${'cd'.repeat(16)}.webp`, animated: false, fx: 0 });
+    // .anim is the still too when there is no full-size copy: main serves whichever is on disk.
+    expect(resolveEmoteArt(plain.id, [plain], false)).toEqual({ kind: 'custom', url: `lolping://emotes/${'cd'.repeat(16)}.anim`, animated: false, fx: 0 });
   });
 
   it('carries the stored effect through to the art', () => {
     const picked: CustomEmote = { id: `c:${hash}`, name: 'm', animated: false, fx: 5 };
-    expect(resolveEmoteArt(picked.id, [picked], false)).toEqual({ kind: 'custom', url: `lolping://emotes/${hash}.webp`, animated: false, fx: 5 });
+    expect(resolveEmoteArt(picked.id, [picked], false)).toEqual({ kind: 'custom', url: `lolping://emotes/${hash}.anim`, animated: false, fx: 5 });
+  });
+
+  it('sizes our own emote at the scale, in its own proportions, and leaves a room member’s to their message', () => {
+    const sized: CustomEmote = { ...moving, w: 400, h: 200 };
+    expect(resolveEmoteArt(sized.id, [sized], false)).toMatchObject({ w: 400, h: 200 });
+    expect(resolveEmoteArt(sized.id, [sized], false, () => false, 50)).toMatchObject({ w: 200, h: 100 });
+    expect(resolveEmoteArt(sized.id, [sized], true, () => false, 50)).not.toHaveProperty('w');
+    expect(resolveEmoteArt(moving.id, [moving], false, () => false, 50)).not.toHaveProperty('w'); // no size known: the square
+  });
+
+  it('keeps a clip on screen for its length when that is longer than an emote stays', () => {
+    const long: CustomEmote = { ...moving, clip: 4500 };
+    const short: CustomEmote = { ...moving, clip: 1200 };
+    expect(resolveEmoteArt(long.id, [long], false)).toMatchObject({ dur: 4.5 });
+    expect(resolveEmoteArt(short.id, [short], false)).not.toHaveProperty('dur');
   });
 
   it('plays our own emote’s sound; a room member’s is never ours, even for the same image', () => {

@@ -102,7 +102,7 @@ describe('settings IPC', () => {
   it('imports an emote: the files are saved and the entry is added', async () => {
     const s = still(1);
     expect(await call(SETTINGS_CH.emoteImport, { name: 'cat', still: s })).toEqual({ ok: true, id: idOf(s) });
-    expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cat', animated: false }]);
+    expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cat', animated: false, w: 160, h: 160 }]);
     expect(existsSync(join(library.dir, `${idOf(s).slice(2)}.webp`))).toBe(true);
     expect(await call(SETTINGS_CH.emoteImport, { name: 'again', still: s })).toEqual({ ok: false, error: 'duplicate' });
     expect(store.get().customEmotes).toHaveLength(1);
@@ -144,10 +144,10 @@ describe('settings IPC', () => {
     const sound = new Uint8Array(300).fill(1);
     sound.set(ascii('OggS'));
     expect(await call(SETTINGS_CH.emoteSound, idOf(s), sound)).toEqual({ ok: true });
-    expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cow', animated: false, sound: true }]);
+    expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cow', animated: false, w: 160, h: 160, sound: true }]);
     expect(readdirSync(library.dir).sort()).toEqual([`${hash}.sound.ogg`, `${hash}.webp`]);
     expect(await call(SETTINGS_CH.emoteSound, idOf(s), null)).toEqual({ ok: true });
-    expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cow', animated: false }]);
+    expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cow', animated: false, w: 160, h: 160 }]);
     expect(readdirSync(library.dir)).toEqual([`${hash}.webp`]);
   });
 
@@ -160,17 +160,17 @@ describe('settings IPC', () => {
     const share = opusSound(1);
     const shareHash = createHash('sha256').update(share).digest('hex').slice(0, 32);
     expect(await call(SETTINGS_CH.emoteSound, idOf(s), sound, share)).toEqual({ ok: true });
-    expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cow', animated: false, sound: true, share: shareHash }]);
+    expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cow', animated: false, w: 160, h: 160, sound: true, share: shareHash }]);
     expect(readdirSync(library.dir).sort()).toEqual([`${hash}.share.ogg`, `${hash}.sound.ogg`, `${hash}.webp`]);
     // A replacement sound whose copy isn't Ogg Opus, or isn't bytes at all, is saved but not shared.
     for (const bad of [sound, 'not bytes', undefined]) {
       expect(await call(SETTINGS_CH.emoteSound, idOf(s), sound, bad)).toEqual({ ok: true });
-      expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cow', animated: false, sound: true }]);
+      expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cow', animated: false, w: 160, h: 160, sound: true }]);
       expect(readdirSync(library.dir).sort()).toEqual([`${hash}.sound.ogg`, `${hash}.webp`]);
       await call(SETTINGS_CH.emoteSound, idOf(s), sound, share);
     }
     expect(await call(SETTINGS_CH.emoteSound, idOf(s), null)).toEqual({ ok: true });
-    expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cow', animated: false }]);
+    expect(store.get().customEmotes).toEqual([{ id: idOf(s), name: 'cow', animated: false, w: 160, h: 160 }]);
   });
 
   it('refuses a sound for an emote that is not ours, or that is not sound bytes', async () => {

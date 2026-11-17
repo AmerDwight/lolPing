@@ -1,6 +1,7 @@
 import { Button, Spinner } from '@fluentui/react-components';
 import {
-  CursorClick24Regular, Emoji24Regular, ImageAdd24Regular, ResizeLarge24Regular, Speaker2Regular, Speaker224Regular, SpeakerMuteRegular,
+  CursorClick24Regular, Emoji24Regular, ImageAdd24Regular, ImageMultiple24Regular, ResizeLarge24Regular, Speaker2Regular,
+  Speaker224Regular, SpeakerMuteRegular,
 } from '@fluentui/react-icons';
 import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_CLICK_EMOTE, DEFAULT_EMOTE_WHEEL, EMOTE_CATALOG } from '../../../shared/emoteCatalog';
@@ -206,8 +207,11 @@ export function EmoteSection({ settings: s, update, lengthUnit }: { settings: Se
       {keyError ? <div className="rowError" role="alert">{keyError}</div> : null}
       <SwitchRow icon={<CursorClick24Regular />} title={t.emoteClick(key)} description={t.emoteClickDesc(key)}
         checked={s.emoteClick} onChange={(v) => void update({ emoteClick: v })} dim={keyOff} />
-      <SliderRow limit="emoteSizePx" icon={<ResizeLarge24Regular />} title={t.emoteSize} value={s.emoteSizePx}
-        format={(v) => `${v} ${lengthUnit}`} onChange={(v) => void update({ emoteSizePx: v })} dim={keyOff} />
+      <SliderRow limit="emoteSizePx" icon={<ResizeLarge24Regular />} title={t.emoteSize} description={t.emoteSizeDesc}
+        value={s.emoteSizePx} format={(v) => `${v} ${lengthUnit}`} onChange={(v) => void update({ emoteSizePx: v })} dim={keyOff} />
+      <SliderRow limit="customEmoteScale" icon={<ImageMultiple24Regular />} title={t.customEmoteScale}
+        description={t.customEmoteScaleDesc} value={s.customEmoteScale} format={(v) => `${v}%`}
+        onChange={(v) => void update({ customEmoteScale: v })} dim={keyOff} />
       <SwitchRow icon={<Speaker224Regular />} title={t.emoteSound} description={t.emoteSoundDesc}
         checked={s.emoteSound} onChange={(v) => void update({ emoteSound: v })} dim={keyOff} />
       <WheelEditor wheel={s.emoteWheel} center={s.clickEmoteId} centerOn={s.emoteClick && !keyOff} trigger={key}

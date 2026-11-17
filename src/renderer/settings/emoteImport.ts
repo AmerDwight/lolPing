@@ -1,7 +1,7 @@
 import { sniffAudio } from '../../shared/audioSniff';
 import {
-  ANIM_MAX_BYTES, ANIM_MAX_SIDE, INPUT_MAX_BYTES, INPUT_MAX_SIDE, SOUND_MAX_BYTES, SOUND_MAX_S, STILL_FALLBACK_SIDE, STILL_MAX_BYTES,
-  STILL_SIDE, type EmoteFile, type ImportError, type SoundError,
+  ANIM_MAX_BYTES, ANIM_MAX_SIDE, ART_MAX_SIDE, INPUT_MAX_BYTES, INPUT_MAX_SIDE, SOUND_MAX_BYTES, SOUND_MAX_S, STILL_FALLBACK_SIDE,
+  STILL_MAX_BYTES, STILL_SIDE, type EmoteFile, type ImportError, type SoundError,
 } from '../../shared/emotes';
 import { imageSize, sniffImage, type ImageType } from '../../shared/imageSniff';
 import { encodeShared } from '../shared/soundShare';
@@ -11,6 +11,8 @@ export type Prepared = { ok: true; file: EmoteFile } | { ok: false; error: Impor
 export type PreparedSound = { ok: true; bytes: Uint8Array; share: Uint8Array | null } | { ok: false; error: SoundError };
 
 const QUALITIES: readonly number[] = [0.85, 0.75, 0.65, 0.55, 0.45];
+/** The full-size copy of a still image is what shows on screen, so it starts near the original's quality. */
+export const FULL_QUALITIES: readonly number[] = [0.92, 0.8, 0.65];
 const MIME: Record<ImageType, string> = { png: 'image/png', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp' };
 
 const fail = (error: ImportError): Prepared => ({ ok: false, error });
@@ -70,8 +72,26 @@ async function encodeStill(frame: VideoFrame): Promise<Uint8Array | null> {
 }
 
 /**
- * Turns a picked or dropped file into what main saves: a small WebP still of its first frame and, for a GIF or WebP with
- * more than one frame, the original bytes as the animation.
+ * A still image at full size, scaled down to ART_MAX_SIDE when it is larger: the first quality of FULL_QUALITIES that fits
+ * ANIM_MAX_BYTES, or null. Without it the emote shows as its small still.
+ */
+async function encodeFull(frame: VideoFrame): Promise<Uint8Array | null> {
+  const size = fitSize(frame.displayWidth, frame.displayHeight, ART_MAX_SIDE);
+  const canvas = new OffscreenCanvas(size.width, size.height);
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(frame, 0, 0, size.width, size.height);
+  for (const quality of FULL_QUALITIES) {
+    const blob = await canvas.convertToBlob({ type: 'image/webp', quality });
+    if (blob.type === 'image/webp' && blob.size <= ANIM_MAX_BYTES) return new Uint8Array(await blob.arrayBuffer());
+  }
+  return null;
+}
+
+/**
+ * Turns a picked or dropped file into what main saves: a small WebP still of its first frame, and the art at full size:
+ * for a GIF or WebP with more than one frame the original bytes, for anything else a WebP of the image.
  */
 export async function prepareEmote(file: File): Promise<Prepared> {
   if (file.size > INPUT_MAX_BYTES) {
@@ -98,7 +118,8 @@ export async function prepareEmote(file: File): Promise<Prepared> {
     const still = await encodeStill(frame);
     if (!still) return fail('detail');
     const name = nameFromFile(file.name);
-    return { ok: true, file: animated ? { name, still, anim: bytes } : { name, still } };
+    const anim = animated ? bytes : await encodeFull(frame);
+    return { ok: true, file: anim ? { name, still, anim } : { name, still } };
   } catch {
     return fail('type'); // looked like an image, but doesn't decode
   } finally {

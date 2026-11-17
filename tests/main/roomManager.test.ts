@@ -403,6 +403,15 @@ describe('incoming emotes', () => {
     expect(emotes.map((e) => e.fx)).toEqual([5, undefined, undefined]);
   });
 
+  it('carries the sender’s size and clip length, and nothing when they left them out', () => {
+    alex.emote({ e: `c:${'a'.repeat(32)}`, w: 320, h: 180, du: 4200 });
+    alex.emote({ e: `c:${'a'.repeat(32)}`, w: 320 }); // half a size is no size
+    alex.emote({});
+    expect(emotes.map(({ w, h, du }) => ({ w, h, du }))).toEqual([
+      { w: 320, h: 180, du: 4200 }, { w: undefined, h: undefined, du: undefined }, { w: undefined, h: undefined, du: undefined },
+    ]);
+  });
+
   it('keeps an emote at the very edge of the display inside it', () => {
     alex.emote({ x: 0, y: 1 });
     expect(emotes[0]).toMatchObject({ x: 0, y: 1080 });
@@ -465,6 +474,13 @@ describe('outgoing', () => {
     lan.sent = [];
     room.sendEmote('gg', { d: 1, x: 0.1, y: 0.2 }, 5);
     expect(sentMessages('lan:a')[0]).toMatchObject({ t: 'emote', e: 'gg', fx: 5, peer: SELF });
+    lan.sent = [];
+    const custom = `c:${'a'.repeat(32)}`;
+    room.sendEmote(custom, { d: 1, x: 0.1, y: 0.2 }, undefined, { w: 320, h: 180, du: 4200 });
+    expect(sentMessages('lan:a')[0]).toMatchObject({ t: 'emote', e: custom, w: 320, h: 180, du: 4200 });
+    lan.sent = [];
+    room.sendEmote(custom, { d: 1, x: 0.1, y: 0.2 }, undefined, { w: 320 });
+    expect(sentMessages('lan:a')[0]).not.toHaveProperty('w'); // a size goes as both sides or not at all
     room.setStatusFlags({ paused: true, roomMuted: false });
     lan.sent = [];
     room.sendEmote('gg', { d: 1, x: 0.1, y: 0.2 });

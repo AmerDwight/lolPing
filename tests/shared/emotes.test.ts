@@ -3,7 +3,7 @@ import { DEFAULT_CLICK_EMOTE, DEFAULT_EMOTE_WHEEL, EMOTE_CATALOG } from '../../s
 import {
   allEmoteAssetFiles, announcedEmoteHashes, announcedEmoteSounds, catalogEmote, customAnimUrl, customHash, customStillUrl, emoteAnimUrl, emoteIconUrl,
   EMOTE_FX_VARIANTS, emoteName, emoteSoundUrl, isBundledEmote, isCustomRef, isEmoteRefShape, normalizeClickEmote,
-  normalizeEmoteWheel, type CustomEmote,
+  normalizeEmoteWheel, ownCustomArt, scaledArtSize, type CustomEmote,
 } from '../../src/shared/emotes';
 
 const HASH = 'a'.repeat(32);
@@ -183,3 +183,38 @@ describe('announcedEmoteSounds', () => {
   });
 });
 
+
+describe('scaledArtSize', () => {
+  it('scales both sides by the percentage, keeping their proportions', () => {
+    expect(scaledArtSize(400, 300, 100)).toEqual({ w: 400, h: 300 });
+    expect(scaledArtSize(400, 300, 50)).toEqual({ w: 200, h: 150 });
+    expect(scaledArtSize(300, 100, 150)).toEqual({ w: 450, h: 150 });
+  });
+
+  it('keeps the longest side between 16 and 2048 px, in the same proportions', () => {
+    expect(scaledArtSize(40, 20, 10)).toEqual({ w: 16, h: 8 });
+    expect(scaledArtSize(1024, 512, 300)).toEqual({ w: 2048, h: 1024 });
+  });
+
+  it('never makes a side smaller than a pixel', () => {
+    expect(scaledArtSize(1000, 2, 10)).toEqual({ w: 100, h: 1 });
+  });
+});
+
+describe('ownCustomArt', () => {
+  const mine: CustomEmote = { id: `c:${HASH}`, name: 'Mine', animated: true, w: 320, h: 240, sound: true, fx: 3, clip: 4200 };
+
+  it('shows the full-size art at the scale, with its sound, effect and clip length', () => {
+    expect(ownCustomArt(mine, 50)).toEqual({
+      kind: 'custom', url: customAnimUrl(HASH), animated: true, fx: 3, w: 160, h: 120, sound: `lolping://emotes/${HASH}.sound`, dur: 4.2,
+    });
+  });
+
+  it('leaves out what the entry does not have', () => {
+    expect(ownCustomArt(custom(HASH), 100)).toEqual({ kind: 'custom', url: customAnimUrl(HASH), animated: false, fx: 0 });
+  });
+
+  it('stays the usual time for a clip shorter than that', () => {
+    expect(ownCustomArt({ ...mine, clip: 2000 }, 100)).not.toHaveProperty('dur');
+  });
+});

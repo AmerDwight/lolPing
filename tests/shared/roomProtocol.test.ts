@@ -200,6 +200,19 @@ describe('emote messages', () => {
     }
   });
 
+  it('carries a custom emote’s size and a clip’s length through', () => {
+    const m: EmoteMsg = { ...emote, e: `c:${'a'.repeat(32)}`, w: 640, h: 360, du: 4500 };
+    expect(validateMessage(m)).toEqual(m);
+    expect(decodeMessage(encodeMessage(m))).toEqual(m);
+  });
+
+  it('drops a malformed size or length rather than the emote', () => {
+    for (const bad of [{ w: 640 }, { w: 0, h: 10 }, { w: 3000, h: 10 }, { w: 1.5, h: 10 }, { w: '640', h: 360 }]) {
+      expect(validateMessage({ ...emote, ...bad }), JSON.stringify(bad)).toEqual(emote);
+    }
+    for (const du of [0, 50, 60_000, 1200.5, '4000']) expect(validateMessage({ ...emote, du }), String(du)).toEqual(emote);
+  });
+
   it('accepts a well-formed slug this version does not know (a newer peer’s emote)', () => {
     expect(validateMessage({ ...emote, e: 'brand_new_2' })).toEqual({ ...emote, e: 'brand_new_2' });
   });

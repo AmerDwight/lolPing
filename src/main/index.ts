@@ -11,7 +11,9 @@ import { resolveLang, strings, type Strings } from '../shared/i18n';
 import {
   SETTINGS_CH, type About, type AppStatus, type PanelAction, type PanelState, type TeammateHistoryOp,
 } from '../shared/ipc';
-import { announcedEmoteHashes, announcedEmoteSounds, customHash, isCustomRef, sharedSoundUrl, type EmoteRef } from '../shared/emotes';
+import {
+  announcedEmoteHashes, announcedEmoteSounds, customHash, isCustomRef, scaledArtSize, sharedSoundUrl, type EmoteRef,
+} from '../shared/emotes';
 import { featureOn, liveKeys, roomFeaturesOff } from '../shared/features';
 import { hotkeyLabel } from '../shared/keys';
 import { LOGO_TEXTURE } from '../shared/pings';
@@ -232,6 +234,16 @@ function start(): void {
   // An imported emote whose still is gone is dropped; normalising the shorter list repairs the wheel slots that used it.
   const kept = library.present(settings.customEmotes);
   if (kept.length !== settings.customEmotes.length) settings = store.update({ customEmotes: kept });
+  // An entry from before sizes were kept is measured once, from its files: it shows at its own size from then on. Only
+  // the size is taken, and only for an entry still without one, since an import or removal may land in the meantime.
+  if (settings.customEmotes.some((c) => c.w === undefined)) {
+    void library.measure(settings.customEmotes).then((measured) => {
+      const sizes = new Map(measured.flatMap((c) => (c.w !== undefined && c.h !== undefined ? [[c.id, { w: c.w, h: c.h }] as const] : [])));
+      const now = store.get().customEmotes;
+      if (!now.some((c) => c.w === undefined && sizes.has(c.id))) return;
+      store.update({ customEmotes: now.map((c) => (c.w === undefined ? { ...c, ...sizes.get(c.id) } : c)) });
+    });
+  }
   // The language setting, or the system display language when it's 'auto'.
   const text = (): Strings => strings(resolveLang(settings.language, app.getLocale()), PLATFORM);
   let enabled = settings.enabledOnStart;
@@ -251,7 +263,7 @@ function start(): void {
         if (!settings.friendEmotes || !cache.has(hash)) return false; // off: friends' images show as the placeholder
         cache.touch(hash); // a shown still is the most recently used at the next cache sweep
         return true;
-      }),
+      }, settings.customEmoteScale),
   );
   overlays.start();
   const bridge = new InputBridge({ command: helperExePath() });
@@ -527,9 +539,11 @@ function start(): void {
   });
   overlays.on('sharedEmote', (p: SharedEmote) => {
     const shared = toShared(overlays.numbered(), p.displayId, p.x, p.y);
-    // The effect rides on the message, so friends see the one its sender picked even before they have the image.
-    const fx = settings.customEmotes.find((c) => c.id === p.ref)?.fx;
-    if (shared) room.sendEmote(p.ref, shared, fx);
+    // The effect, size and clip length ride on the message, so friends see the emote as its sender does even before
+    // they have the image.
+    const mine = settings.customEmotes.find((c) => c.id === p.ref);
+    const size = mine?.w !== undefined && mine.h !== undefined ? scaledArtSize(mine.w, mine.h, settings.customEmoteScale) : {};
+    if (shared) room.sendEmote(p.ref, shared, mine?.fx, { ...size, ...(mine?.clip !== undefined ? { du: mine.clip } : {}) });
   });
   // This session's room lines: members' text and alive lines while the text feature is on, and our own.
   const history = new RoomHistory(() => refreshRoster());

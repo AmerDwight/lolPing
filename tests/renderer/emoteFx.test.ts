@@ -12,7 +12,11 @@ class FakeElement {
   readonly dataset: Record<string, string> = {};
   parent: FakeElement | null = null;
   children: FakeElement[] = [];
-  readonly style: Record<string, unknown> & { setProperty(k: string, v: string): void } = { setProperty: () => undefined };
+  /** The custom properties set on it, such as --w and --dur. */
+  readonly props = new Map<string, string>();
+  readonly style: Record<string, unknown> & { setProperty(k: string, v: string): void } = {
+    setProperty: (k: string, v: string) => void this.props.set(k, v),
+  };
   constructor(readonly tagName: string) {}
   append(...els: FakeElement[]): void {
     for (const el of els) {
@@ -20,6 +24,11 @@ class FakeElement {
       el.parent = this;
       this.children.push(el);
     }
+  }
+  prepend(el: FakeElement): void {
+    el.remove();
+    el.parent = this;
+    this.children.unshift(el);
   }
   remove(): void {
     if (!this.parent) return;
@@ -212,8 +221,15 @@ describe('custom emote effects', () => {
     expect(fx.children[0].tagName).toBe('img'); // the fake DOM finds by class only, so check the tag
     stage.clear('self');
 
+    stage.clear('self');
+  });
+
+  it('plays a moving one in its envelope too, once its file has arrived', async () => {
+    const layer = new FakeElement('div');
+    const stage = new EmoteStage(layer as unknown as HTMLElement, () => Promise.resolve(new Blob(['gif'])));
     const other = '000b' + '0'.repeat(28);
     stage.spawn('self', { kind: 'custom', url: `lolping://emotes/${other}.anim`, animated: true, fx: 2 }, 10, 20, { sizePx: 150 });
+    await flush();
     expect(layer.find('emote')[0].find('fx')[0].className.split(' ')).toEqual(['fx', 'v2']);
     stage.clear('self');
   });
@@ -226,6 +242,69 @@ describe('custom emote effects', () => {
     expect(fx.className.split(' ')).toEqual(['fx', 'v0']);
     expect(fx.find('bubble')).toHaveLength(1);
     stage.clear('self');
+  });
+});
+
+describe('custom emote sizes and clips', () => {
+  const url = `lolping://emotes/${'0c'.repeat(16)}.anim`;
+
+  it('gives art with a size of its own that box, and anything else the emote size square', () => {
+    const layer = new FakeElement('div');
+    const stage = new EmoteStage(layer as unknown as HTMLElement);
+    stage.spawn('a', { kind: 'custom', url, animated: false, fx: 0, w: 320, h: 180 }, 0, 0, { sizePx: 150 });
+    stage.spawn('b', { kind: 'custom', url, animated: false, fx: 0 }, 0, 0, { sizePx: 150 });
+    stage.spawn('c', { kind: 'bundled', slug: 'facepalm' }, 0, 0, { sizePx: 120 });
+    const [a, b, c] = layer.find('emote').map((e) => Object.fromEntries(e.props));
+    expect(a).toMatchObject({ '--w': '320px', '--h': '180px', '--size': '320px' });
+    expect(b).toMatchObject({ '--w': '150px', '--h': '150px', '--size': '150px' });
+    expect(c).toMatchObject({ '--w': '120px', '--h': '120px', '--size': '120px' });
+    for (const o of ['a', 'b', 'c']) stage.clear(o);
+  });
+
+  it('keeps a clip on screen for its whole length, and anything shorter for the usual 3 s', () => {
+    vi.useFakeTimers();
+    try {
+      const layer = new FakeElement('div');
+      const stage = new EmoteStage(layer as unknown as HTMLElement, () => Promise.resolve(new Blob(['webp'])));
+      stage.spawn('long', { kind: 'custom', url, animated: true, fx: 0, dur: 4.5 }, 0, 0, { sizePx: 150 });
+      stage.spawn('short', { kind: 'custom', url, animated: true, fx: 0 }, 0, 0, { sizePx: 150 });
+      expect(layer.find('emote').map((e) => e.props.get('--dur'))).toEqual(['4.5s', '3s']);
+      vi.advanceTimersByTime(3200);
+      expect(layer.find('emote')).toHaveLength(1);
+      vi.advanceTimersByTime(1500);
+      expect(layer.find('emote')).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('gives every showing of a moving emote its own object URL from one fetch, so each starts at frame 0', async () => {
+    const layer = new FakeElement('div');
+    const fetchBlob = vi.fn(() => Promise.resolve(new Blob(['webp'])));
+    const stage = new EmoteStage(layer as unknown as HTMLElement, fetchBlob);
+    const art = { kind: 'custom', url, animated: true, fx: 0 } as const;
+    stage.spawn('a', art, 0, 0, { sizePx: 150 });
+    stage.spawn('b', art, 0, 0, { sizePx: 150 });
+    await flush();
+    const srcs = layer.find('emote').map((e) => e.find('fx')[0].children[0].src);
+    expect(srcs[0]).toMatch(/^blob:/);
+    expect(srcs[1]).toMatch(/^blob:/);
+    expect(srcs[0]).not.toBe(srcs[1]);
+    expect(fetchBlob).toHaveBeenCalledTimes(1);
+    stage.forgetCustom(); // settings changed: the file may have been replaced under the same URL
+    stage.spawn('a', art, 0, 0, { sizePx: 150 });
+    await flush();
+    expect(fetchBlob).toHaveBeenCalledTimes(2);
+    for (const o of ['a', 'b']) stage.clear(o);
+  });
+
+  it('falls back to the URL itself when the fetch fails', async () => {
+    const layer = new FakeElement('div');
+    const stage = new EmoteStage(layer as unknown as HTMLElement, () => Promise.reject(new Error('404')));
+    stage.spawn('a', { kind: 'custom', url, animated: true, fx: 0 }, 0, 0, { sizePx: 150 });
+    await flush();
+    expect(layer.find('emote')[0].find('fx')[0].children[0].src).toBe(url);
+    stage.clear('a');
   });
 });
 

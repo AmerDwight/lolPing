@@ -469,6 +469,24 @@ describe('OverlayManager remote and preview emotes', () => {
     expect(sent(0)[1][1]).toMatchObject({ art: { kind: 'custom', fx: 0 } }); // no fx on the message: the sender's plain pop, whatever we stored
   });
 
+  it('shows a room member’s custom emote at the size on their message, for a clip’s length, over our own', () => {
+    const url = `lolping://emotes/${'a'.repeat(32)}.webp`;
+    const tag = { name: 'Bob', color: 2 };
+    const ref = `c:${'a'.repeat(32)}`;
+    resolveArt
+      .mockReturnValueOnce({ kind: 'custom', url, animated: false, fx: 0, w: 900, h: 900 })
+      .mockReturnValueOnce({ kind: 'custom', url, animated: false, fx: 0 })
+      .mockReturnValueOnce({ kind: 'placeholder' });
+    mgr.spawnRemoteEmote({ displayId: 1, x: 1, y: 1, ref, w: 320, h: 180, du: 4500, peer: 'peer-1', tag });
+    mgr.spawnRemoteEmote({ displayId: 1, x: 1, y: 1, ref, du: 2000, peer: 'peer-1', tag });
+    mgr.spawnRemoteEmote({ displayId: 1, x: 1, y: 1, ref, w: 320, h: 180, peer: 'peer-1', tag });
+    expect(sent(0)[0][1]).toMatchObject({ art: { kind: 'custom', w: 320, h: 180, dur: 4.5 } });
+    const short = (sent(0)[1][1] as { art: EmoteArt }).art;
+    expect(short).not.toHaveProperty('w'); // no size on the message: our emote size square
+    expect(short).not.toHaveProperty('dur'); // a clip shorter than an emote stays the usual time
+    expect((sent(0)[2][1] as { art: EmoteArt }).art).toEqual({ kind: 'placeholder' });
+  });
+
   it('plays the sender’s shared sound with their custom emote, over ours for the same image, and none with a placeholder', () => {
     const url = `lolping://emotes/${'a'.repeat(32)}.webp`;
     const theirs = `lolping://emotes/${'b'.repeat(32)}.ogg`;

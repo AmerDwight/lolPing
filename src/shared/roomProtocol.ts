@@ -1,4 +1,4 @@
-import { ANNOUNCED_MAX, HASH_RE, isEmoteFx, isEmoteRefShape, type EmoteRef } from './emotes';
+import { ANNOUNCED_MAX, ART_MAX_PX, HASH_RE, isClipMs, isEmoteFx, isEmoteRefShape, type EmoteRef } from './emotes';
 import { isPingId, type PingId } from './pings';
 import { isTagColor, isTagRgb, type TagRgb } from './roomColors';
 
@@ -65,6 +65,11 @@ export interface EmoteMsg extends Base {
   e: EmoteRef;
   /** The sender's chosen effect for a custom emote, 0–5; absent is the plain pop. Added in 0.5.2; older apps leave it out. */
   fx?: number;
+  /** Added after 0.6.0: a custom emote's size on the sender's screen in px, both or neither. Older apps leave it out. */
+  w?: number;
+  h?: number;
+  /** Added after 0.6.0: a clip's length in ms, so it stays on screen until it has played. Older apps leave it out. */
+  du?: number;
   d: number;
   x: number;
   y: number;
@@ -162,6 +167,8 @@ export const isVoteId = (v: unknown): v is string => typeof v === 'string' && VO
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isUint = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
 const isUnit = (v: unknown): v is number => typeof v === 'number' && v >= 0 && v <= 1;
+/** A side of an emote on screen: whole px, at most ART_MAX_PX. */
+const isShownSide = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= ART_MAX_PX;
 
 /** Chunk `b` is at most this many base64 characters (750 bytes); 17 chunks carry a full 12 KB still. */
 export const EMOTE_CHUNK_B64_MAX = 1000;
@@ -239,12 +246,15 @@ export function validateMessage(raw: unknown): RoomMessage | null {
       return { t, ...base, ping, d: d as number, x, y };
     }
     case 'emote': {
-      const { e, fx, d, x, y } = raw;
+      const { e, fx, w, h, du, d, x, y } = raw;
       if (!isEmoteRefShape(e) || !Number.isInteger(d) || (d as number) < 1 || (d as number) > MAX_DISPLAY) return null;
       if (!isUnit(x) || !isUnit(y)) return null;
-      // A malformed effect is dropped rather than the whole emote, the way a malformed tag colour is: the sender's
-      // moment still plays, as the plain pop.
-      return { t, ...base, e, d: d as number, x, y, ...(isEmoteFx(fx) ? { fx } : {}) };
+      // A malformed effect, size or length is dropped rather than the whole emote, the way a malformed tag colour is:
+      // the sender's moment still plays, as the plain pop in the emote size square for the usual time.
+      return {
+        t, ...base, e, d: d as number, x, y, ...(isEmoteFx(fx) ? { fx } : {}),
+        ...(isShownSide(w) && isShownSide(h) ? { w, h } : {}), ...(isClipMs(du) ? { du } : {}),
+      };
     }
     case 'text': {
       const { text, d, x, y } = raw;

@@ -15,6 +15,14 @@ export interface CustomEmote {
   share?: string;
   /** Which signature effect it plays when it lands: 0–5. Nothing stored (an entry from an older version) plays the plain pop. */
   fx?: number;
+  /**
+   * The size of its art in px, the size it shows at 100%: its `.anim` file's, or its still's when it has none. Set at
+   * import; measured once at launch for an entry from an older version.
+   */
+  w?: number;
+  h?: number;
+  /** Made from a video: the clip's length in ms, which is how long it stays on screen when that is longer than usual. */
+  clip?: number;
 }
 
 /** A stored effect: an integer within EMOTE_FX_VARIANTS. Anything else means the plain pop. */
@@ -24,15 +32,27 @@ export const isEmoteFx = (v: unknown): v is number =>
 /** What an emote looks like on screen. A placeholder stands in for a custom emote whose files are missing. */
 export type EmoteArt =
   | { kind: 'bundled'; slug: string }
-  | { kind: 'custom'; url: string; animated: boolean; sound?: string; /** The signature effect it plays; 0 is the plain pop. */ fx: number }
+  | {
+    kind: 'custom'; url: string; animated: boolean; sound?: string; /** The signature effect it plays; 0 is the plain pop. */ fx: number;
+    /** Its size on screen in px. Without one it fills the emote size setting's square, as every emote did before sizes. */
+    w?: number; h?: number;
+    /** Seconds on screen, when that is longer than EMOTE_DURATION_S: a clip stays until it has played. */
+    dur?: number;
+  }
   | { kind: 'placeholder' };
 
 export type ImportError = 'type' | 'size' | 'animSize' | 'detail' | 'full' | 'duplicate' | 'disk';
-/** What the settings renderer sends the main process when importing: the 160 px still and, optionally, the original animation. */
+/**
+ * What the settings renderer sends the main process when importing: the 160 px still and the art at full size, which is
+ * the original animation, a video's frames, or the image itself as a WebP of up to ART_MAX_SIDE. An image the window
+ * couldn't make a full-size copy of has no `anim`, and shows as its still.
+ */
 export interface EmoteFile {
   name: string;
   still: Uint8Array;
   anim?: Uint8Array;
+  /** The clip's length in ms, for art made from a video. */
+  clip?: number;
 }
 export type ImportResult = { ok: true; id: EmoteRef } | { ok: false; error: ImportError };
 export type SoundError = 'type' | 'size' | 'long' | 'disk';
@@ -49,9 +69,17 @@ export const INPUT_MAX_BYTES = 8_388_608;
 export const INPUT_MAX_SIDE = 8192;
 export const ANIM_MAX_BYTES = 5_242_880;
 export const ANIM_MAX_SIDE = 1024;
+/** A still image's full-size copy is scaled down to this on its longest side: the most a custom emote shows at 100%. */
+export const ART_MAX_SIDE = ANIM_MAX_SIDE;
+/** A custom emote on screen, after the scale: never smaller than this on its longest side, nor larger. */
+export const ART_MIN_PX = 16;
+export const ART_MAX_PX = 2048;
 /** An imported emote's sound: OGG, MP3 or WAV, at most this many bytes and seconds. */
 export const SOUND_MAX_BYTES = 1_048_576;
 export const SOUND_MAX_S = 5;
+/** A video emote is a clip of at least CLIP_MIN_S and at most CLIP_MAX_S, the longest sound an emote can have. */
+export const CLIP_MIN_S = 0.3;
+export const CLIP_MAX_S = SOUND_MAX_S;
 /** The copy of a sound that travels through a room: mono Ogg Opus, at most this many bytes (22 chunks). */
 export const SHARED_SOUND_MAX_BYTES = 16_384;
 /** A shared sound's packets may decode to this much: SOUND_MAX_S, the picker's slack, and the encoder's delay and padding. */
@@ -101,6 +129,37 @@ export function emoteName(ref: EmoteRef, lang: Lang, custom: readonly CustomEmot
   const bundled = catalogEmote(ref);
   if (bundled) return lang === 'zh-CN' ? bundled.nameZh : bundled.name;
   return custom.find((c) => c.id === ref)?.name ?? '?';
+}
+
+/** A stored size: an integer from 1 to ART_MAX_SIDE. */
+export const isArtSide = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= ART_MAX_SIDE;
+/** A stored clip length in ms: whole, and no longer than a shared sound may play. */
+export const isClipMs = (v: unknown): v is number =>
+  Number.isInteger(v) && (v as number) >= CLIP_MIN_S * 1000 && (v as number) <= SHARED_SOUND_MAX_S * 1000;
+
+/**
+ * An art size `scale` percent of (w, h), its sides in the same proportion, rounded to whole px, and kept between
+ * ART_MIN_PX and ART_MAX_PX on its longest side.
+ */
+export function scaledArtSize(w: number, h: number, scale: number): { w: number; h: number } {
+  const longest = Math.max(w, h);
+  const target = Math.min(ART_MAX_PX, Math.max(ART_MIN_PX, (longest * scale) / 100));
+  const k = target / longest;
+  return { w: Math.max(1, Math.round(w * k)), h: Math.max(1, Math.round(h * k)) };
+}
+
+/**
+ * Our own imported emote as it shows here: its full-size art (main serves the still when there is none), at `scale`
+ * percent of its own size, with its sound when it has one, for its clip's length when it is a clip.
+ */
+export function ownCustomArt(c: CustomEmote, scale: number): EmoteArt {
+  const hash = customHash(c.id);
+  const size = c.w !== undefined && c.h !== undefined ? scaledArtSize(c.w, c.h, scale) : {};
+  return {
+    kind: 'custom', url: customAnimUrl(hash), animated: c.animated, fx: c.fx ?? 0, ...size,
+    ...(c.sound ? { sound: customSoundUrl(hash) } : {}),
+    ...(c.clip !== undefined && c.clip / 1000 > EMOTE_DURATION_S ? { dur: c.clip / 1000 } : {}),
+  };
 }
 
 /** The hashes one presence announces: the custom emotes on the centre and wheel, distinct, at most ANNOUNCED_MAX. */

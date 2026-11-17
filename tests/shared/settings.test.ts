@@ -323,6 +323,36 @@ describe('emote settings', () => {
     expect(list).toEqual([{ ...entry('a'), sound: true, share }, entry('b'), { ...entry('c'), sound: true }, { ...entry('d'), sound: true }]);
   });
 
+  it('custom emotes keep a size only when both sides are whole numbers up to 1024', () => {
+    const list = normalizeSettings({
+      customEmotes: [
+        { ...entry('a'), w: 640, h: 360 }, { ...entry('b'), w: 640 }, { ...entry('c'), w: 2000, h: 10 }, { ...entry('d'), w: 1.5, h: 9 },
+        { ...entry('e'), w: '64', h: 64 }, { ...entry('f'), w: 0, h: 64 },
+      ],
+    }).customEmotes;
+    expect(list).toEqual([{ ...entry('a'), w: 640, h: 360 }, entry('b'), entry('c'), entry('d'), entry('e'), entry('f')]);
+  });
+
+  it('custom emotes keep a clip length only on art that moves, and only one a clip can have', () => {
+    const list = normalizeSettings({
+      customEmotes: [
+        { ...entry('a', 'Mine', true), clip: 4000 }, { ...entry('b'), clip: 4000 }, { ...entry('c', 'Mine', true), clip: 60_000 },
+        { ...entry('d', 'Mine', true), clip: 100 }, { ...entry('e', 'Mine', true), clip: 2500.5 },
+      ],
+    }).customEmotes;
+    expect(list).toEqual([
+      { ...entry('a', 'Mine', true), clip: 4000 }, entry('b'), entry('c', 'Mine', true), entry('d', 'Mine', true), entry('e', 'Mine', true),
+    ]);
+  });
+
+  it('customEmoteScale clamps to 10–300% in steps of 5, and is 100% by default', () => {
+    expect(normalizeSettings({}).customEmoteScale).toBe(100);
+    expect(normalizeSettings({ customEmoteScale: 1 }).customEmoteScale).toBe(10);
+    expect(normalizeSettings({ customEmoteScale: 999 }).customEmoteScale).toBe(300);
+    expect(normalizeSettings({ customEmoteScale: 73 }).customEmoteScale).toBe(75);
+    expect(normalizeSettings({ customEmoteScale: 'big' }).customEmoteScale).toBe(100);
+  });
+
   it('custom emotes keep a sound flag only when it is true', () => {
     const list = normalizeSettings({ customEmotes: [{ ...entry('a'), sound: true }, { ...entry('b'), sound: 'yes' }] }).customEmotes;
     expect(list).toEqual([{ ...entry('a'), sound: true }, entry('b')]);
@@ -602,7 +632,8 @@ describe('helpers', () => {
     expect(overlaySettings(DEFAULT_SETTINGS)).toEqual({
       pingSizePx: 110, pingDurationS: 3.2, keepLastPing: false, volume: 70, muted: false, tickSound: true,
       wheelSizePx: 600, wheel: ['danger', 'push', 'omw', 'allin', 'assist', 'needvision', 'missing', 'enemyvision'], clickPingId: 'generic',
-      emoteWheel: [...DEFAULT_EMOTE_WHEEL], clickEmoteId: DEFAULT_CLICK_EMOTE, emoteSizePx: 150, emoteSound: true, customEmotes: [],
+      emoteWheel: [...DEFAULT_EMOTE_WHEEL], clickEmoteId: DEFAULT_CLICK_EMOTE, emoteSizePx: 150, customEmoteScale: 100, emoteSound: true,
+      customEmotes: [],
       ask: {
         tag: { name: 'AI', color: 3, rgb: null },
         labels: {

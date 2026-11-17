@@ -1,8 +1,6 @@
 import { EMOTE_CATALOG } from '../../shared/emoteCatalog';
 import {
-  CUSTOM_EMOTE_URL, allEmoteAssetFiles, catalogEmote, customAnimUrl, customHash, customSoundUrl, customStillUrl, emoteSoundUrl,
-  isBundledEmote,
-  type EmoteArt, type EmoteRef,
+  CUSTOM_EMOTE_URL, allEmoteAssetFiles, catalogEmote, emoteSoundUrl, isBundledEmote, ownCustomArt, type EmoteArt, type EmoteRef,
 } from '../../shared/emotes';
 import {
   DEFAULT_CLICK_PING, TICK_SOUND, allSoundNames, allTextureNames, pingById, pingsFor, soundUrl, textureUrl, type PingDef,
@@ -56,10 +54,7 @@ const emoteWheel = new Wheel(emoteSvg, 'EMOTE', centers.emote, tick);
 function localArt(ref: EmoteRef): EmoteArt {
   if (isBundledEmote(ref)) return { kind: 'bundled', slug: ref };
   const custom = settings.customEmotes.find((c) => c.id === ref);
-  if (!custom) return { kind: 'placeholder' };
-  const hash = customHash(ref);
-  const sound = custom.sound ? { sound: customSoundUrl(hash) } : {};
-  return { kind: 'custom', url: custom.animated ? customAnimUrl(hash) : customStillUrl(hash), animated: custom.animated, ...sound, fx: custom.fx ?? 0 };
+  return custom ? ownCustomArt(custom, settings.customEmoteScale) : { kind: 'placeholder' };
 }
 
 /** Our newest ping on this display while "Keep my last ping on screen" is on. */
@@ -73,6 +68,7 @@ function dropKeptPing(): void {
 function applySettings(s: OverlaySettings): void {
   settings = s;
   sounds.forget(CUSTOM_EMOTE_URL); // an imported emote's sound may have been replaced: load it again when it next plays
+  stage.forgetCustom(); // and its animation
   if (!s.keepLastPing) dropKeptPing();
   pingWheel.setSize(s.wheelSizePx);
   emoteWheel.setSize(s.wheelSizePx);

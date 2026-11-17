@@ -1,6 +1,6 @@
 import { BrowserWindow, ipcMain, screen, type Display, type Rectangle, type WebContents } from 'electron';
 import { EventEmitter } from 'node:events';
-import { isEmoteRefShape, type EmoteArt, type EmoteRef } from '../shared/emotes';
+import { EMOTE_DURATION_S, isEmoteRefShape, type EmoteArt, type EmoteRef } from '../shared/emotes';
 import {
   OVERLAY_ASSETS, OVERLAY_EMOTED, OVERLAY_IDLE, OVERLAY_PINGED, OVERLAY_SHARE, type OverlayChannel, type OverlayEvents, type PingTag,
 } from '../shared/ipc';
@@ -337,11 +337,19 @@ export class OverlayManager extends EventEmitter {
    * A room member's emote, already mapped onto one of our displays. It replaces their earlier one, whichever display that
    * was on. `sound` is the URL of the sender's shared sound for it, when that has arrived.
    */
-  spawnRemoteEmote(p: { displayId: number; x: number; y: number; ref: EmoteRef; fx?: number; sound?: string; peer: string; tag: PingTag }): void {
+  spawnRemoteEmote(p: {
+    displayId: number; x: number; y: number; ref: EmoteRef; fx?: number; w?: number; h?: number; du?: number; sound?: string; peer: string;
+    tag: PingTag;
+  }): void {
     const art = this.resolveArt(p.ref, true);
-    // The effect and the sound are the sender's choice, so theirs win — over a cached still's plain pop and silence, and
-    // over what we picked if we happen to have the same image imported. An image we can't show plays no sound either.
-    const withFx = art.kind === 'custom' ? { ...art, fx: p.fx ?? 0, ...(p.sound ? { sound: p.sound } : {}) } : art;
+    // The effect, size, length and sound are the sender's choice, so theirs win — over a cached still's plain pop and
+    // silence, and over what we picked if we happen to have the same image imported. An image we can't show plays no
+    // sound either. Without a size from the sender it fills our emote size square.
+    const look = {
+      ...(p.w !== undefined && p.h !== undefined ? { w: p.w, h: p.h } : {}),
+      ...(p.du !== undefined && p.du / 1000 > EMOTE_DURATION_S ? { dur: p.du / 1000 } : {}),
+    };
+    const withFx = art.kind === 'custom' ? { ...art, fx: p.fx ?? 0, ...look, ...(p.sound ? { sound: p.sound } : {}) } : art;
     this.send(p.displayId, 'emote:spawn', { owner: p.peer, art: withFx, x: p.x, y: p.y, tag: p.tag });
     this.clearElsewhere(p.displayId, p.peer);
   }
