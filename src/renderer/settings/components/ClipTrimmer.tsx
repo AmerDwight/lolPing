@@ -4,9 +4,10 @@ import {
 import { Pause24Regular, Play24Regular } from '@fluentui/react-icons';
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from 'react';
 import type { ImportError } from '../../../shared/emotes';
-import { dragClip, dragEnd, dragStart, formatClock, initialRange, type ClipRange } from '../clipRange';
+import { clipArtSize, dragClip, dragEnd, dragStart, formatClock, initialRange, type ClipRange } from '../clipRange';
 import { useText } from '../text';
 import { decodeVideoSound, loadVideo, prepareClip, type LoadedVideo, type PreparedClip } from '../videoEmote';
+import { SizeSlider } from './EmoteSizer';
 
 export type ClipResult = { ok: true; clip: PreparedClip } | { ok: false; error: ImportError } | null;
 
@@ -17,7 +18,7 @@ const STEP_S = 0.1;
 
 /**
  * The trim dialog a picked video opens: a preview that loops the chosen part, a track with its two edges and the part
- * between them to drag, and whether to keep the sound. `onDone` gets the prepared clip, an error (the video can't be
+ * between them to drag, the emote's size, and whether to keep the sound. `onDone` gets the prepared clip, an error (the video can't be
  * used, or the clip can't be made small enough), or null when cancelled.
  */
 export function ClipTrimmer({ file, onDone }: { file: File; onDone(result: ClipResult): void }) {
@@ -27,6 +28,7 @@ export function ClipTrimmer({ file, onDone }: { file: File; onDone(result: ClipR
   // undefined while it is being decoded, null for a video with no sound this Chromium can decode.
   const [sound, setSound] = useState<AudioBuffer | null | undefined>(undefined);
   const [keepSound, setKeepSound] = useState(true);
+  const [scale, setScale] = useState(100);
   const [playing, setPlaying] = useState(true);
   const [head, setHead] = useState(0);
   const [working, setWorking] = useState<number | null>(null);
@@ -139,7 +141,7 @@ export function ClipTrimmer({ file, onDone }: { file: File; onDone(result: ClipR
   const withSound = keepSound && !!sound;
   const add = () => {
     setWorking(0);
-    void prepareClip(file.name, video, range, withSound && sound ? sound : null, (p) => setWorking(p)).then((r) => done.current(r));
+    void prepareClip(file.name, video, range, withSound && sound ? sound : null, scale, (p) => setWorking(p)).then((r) => done.current(r));
   };
   const length = range.end - range.start;
   const edge = (kind: 'start' | 'end') => (
@@ -170,6 +172,7 @@ export function ClipTrimmer({ file, onDone }: { file: File; onDone(result: ClipR
               </div>
             </div>
             <span className="clipTimes">{t.clipRange(formatClock(range.start), formatClock(range.end), length.toFixed(1))}</span>
+            <SizeSlider scale={scale} {...clipArtSize(video.width, video.height)} disabled={working !== null} onChange={setScale} />
             <Switch checked={withSound} disabled={!sound || working !== null} onChange={(_, d) => setKeepSound(d.checked)}
               label={sound === undefined ? t.clipReadingSound : sound === null ? t.clipNoSound : t.clipSound} />
           </DialogContent>

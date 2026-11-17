@@ -5,7 +5,7 @@ import { AUDIO_TYPES, sniffAudio } from '../shared/audioSniff';
 import {
   ANIM_MAX_BYTES, ANIM_MAX_SIDE, CUSTOM_NAME_MAX, MAX_CUSTOM_EMOTES, SHARED_ANIM_MAX_BYTES, SHARED_ANIM_MAX_FRAMES, SHARED_ANIM_MAX_MS,
   SHARED_ANIM_SIDE, SHARED_SOUND_MAX_BYTES, SHARED_SOUND_MAX_S, SOUND_MAX_BYTES, STILL_MAX_BYTES, STILL_SIDE, customHash, customStillUrl,
-  isBundledEmote, isClipMs, isCustomRef, ownCustomArt,
+  isBundledEmote, isClipMs, isCustomRef, isEmoteScale, ownCustomArt,
   type CustomEmote, type EmoteArt, type EmoteFile, type EmoteRef, type ImportError, type SoundError,
 } from '../shared/emotes';
 import { gifExtent, isAnimatedWebp, sniffImage, webpSize } from '../shared/imageSniff';
@@ -31,12 +31,14 @@ const longest = (size: { width: number; height: number }): number => Math.max(si
 /** An import as it arrived over IPC, rebuilt from its known fields: a string name and byte arrays. Null for anything else. */
 export function emoteFileFrom(raw: unknown): EmoteFile | null {
   if (typeof raw !== 'object' || raw === null) return null;
-  const { name, still, anim, clip, shareAnim } = raw as Record<string, unknown>;
+  const { name, still, anim, clip, scale, shareAnim } = raw as Record<string, unknown>;
   if (typeof name !== 'string' || !(still instanceof Uint8Array)) return null;
-  if (anim === undefined) return { name, still };
+  // A scale out of range is left out, and the emote shows at 100%, rather than the import refused.
+  const sized = isEmoteScale(scale) ? { scale } : {};
+  if (anim === undefined) return { name, still, ...sized };
   if (!(anim instanceof Uint8Array)) return null;
   // A copy that isn't bytes is left out rather than the import refused: the emote still works, friends see its still.
-  return { name, still, anim, ...(isClipMs(clip) ? { clip } : {}), ...(shareAnim instanceof Uint8Array ? { shareAnim } : {}) };
+  return { name, still, anim, ...(isClipMs(clip) ? { clip } : {}), ...sized, ...(shareAnim instanceof Uint8Array ? { shareAnim } : {}) };
 }
 
 /** The still the settings window encoded: a still WebP of at most STILL_MAX_BYTES and STILL_SIDE px. */
@@ -95,18 +97,16 @@ export function checkSharedAnim(b: Uint8Array): ImportError | null {
 }
 
 /**
- * What an emote looks like on screen. Our own imported emote shows at `scale` percent of its art's size. A room
- * member's shows as its still when it is one of ours too, or, through `cacheHas`, when its still arrived over the room,
- * and the sender's message says its size. Anything else is the placeholder.
+ * What an emote looks like on screen. Our own imported emote shows at its own size. A room member's shows as its still
+ * when it is one of ours too, or, through `cacheHas`, when its still arrived over the room, and the sender's message
+ * says its size. Anything else is the placeholder.
  */
-export function resolveEmoteArt(
-  ref: EmoteRef, custom: readonly CustomEmote[], remote: boolean, cacheHas: (hash: string) => boolean = () => false, scale = 100,
-): EmoteArt {
+export function resolveEmoteArt(ref: EmoteRef, custom: readonly CustomEmote[], remote: boolean, cacheHas: (hash: string) => boolean = () => false): EmoteArt {
   if (isBundledEmote(ref)) return { kind: 'bundled', slug: ref };
   if (!isCustomRef(ref)) return { kind: 'placeholder' };
   const hash = customHash(ref);
   const emote = custom.find((c) => c.id === ref);
-  if (emote && !remote) return ownCustomArt(emote, scale);
+  if (emote && !remote) return ownCustomArt(emote);
   if (emote) return { kind: 'custom', url: customStillUrl(hash), animated: false, fx: emote.fx ?? 0 };
   // A friend's cached still has no entry here, so the plain pop is its default; the sender's message can still carry their fx.
   return remote && cacheHas(hash) ? { kind: 'custom', url: customStillUrl(hash), animated: false, fx: 0 } : { kind: 'placeholder' };
@@ -155,6 +155,7 @@ export class EmoteLibrary {
       ok: true,
       emote: {
         id, name, animated, ...(size ? { w: size.width, h: size.height } : {}),
+        ...(f.scale !== undefined ? { scale: f.scale } : {}),
         ...(animated && f.clip !== undefined ? { clip: f.clip } : {}),
         ...(shareAnim ? { shareAnim: digest32(shareAnim) } : {}),
       },

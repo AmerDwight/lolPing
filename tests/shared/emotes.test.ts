@@ -202,20 +202,24 @@ describe('scaledArtSize', () => {
 });
 
 describe('ownCustomArt', () => {
-  const mine: CustomEmote = { id: `c:${HASH}`, name: 'Mine', animated: true, w: 320, h: 240, sound: true, fx: 3, clip: 4200 };
+  const mine: CustomEmote = { id: `c:${HASH}`, name: 'Mine', animated: true, w: 320, h: 240, scale: 50, sound: true, fx: 3, clip: 4200 };
 
-  it('shows the full-size art at the scale, with its sound, effect and clip length', () => {
-    expect(ownCustomArt(mine, 50)).toEqual({
+  it('shows the full-size art at its own scale, with its sound, effect and clip length', () => {
+    expect(ownCustomArt(mine)).toEqual({
       kind: 'custom', url: customAnimUrl(HASH), animated: true, fx: 3, w: 160, h: 120, sound: `lolping://emotes/${HASH}.sound`, dur: 4.2,
     });
   });
 
   it('leaves out what the entry does not have', () => {
-    expect(ownCustomArt(custom(HASH), 100)).toEqual({ kind: 'custom', url: customAnimUrl(HASH), animated: false, fx: 0 });
+    expect(ownCustomArt(custom(HASH))).toEqual({ kind: 'custom', url: customAnimUrl(HASH), animated: false, fx: 0 });
   });
 
   it('stays the usual time for a clip shorter than that', () => {
-    expect(ownCustomArt({ ...mine, clip: 2000 }, 100)).not.toHaveProperty('dur');
+    expect(ownCustomArt({ ...mine, clip: 2000 })).not.toHaveProperty('dur');
+  });
+
+  it('shows at 100% when no scale was chosen', () => {
+    expect(ownCustomArt({ ...custom(HASH), w: 320, h: 240 })).toMatchObject({ w: 320, h: 240 });
   });
 });
 

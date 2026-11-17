@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { clipAttempts, clipFrames, dragClip, dragEnd, dragStart, formatClock, initialRange } from '../../src/renderer/settings/clipRange';
+import {
+  clipArtSize, clipAttempts, clipFrames, dragClip, dragEnd, dragStart, formatClock, initialRange, keptScale,
+} from '../../src/renderer/settings/clipRange';
 
 describe('initialRange', () => {
   it('is the first 5 seconds, or all of a shorter video', () => {
@@ -83,5 +85,28 @@ describe('formatClock', () => {
     expect(formatClock(4.96)).toBe('0:05.0');
     expect(formatClock(65.24)).toBe('1:05.2');
     expect(formatClock(599.99)).toBe('10:00.0');
+  });
+});
+
+describe('clipArtSize', () => {
+  it('is the video scaled down to 640 px on its longest side, or as it is when smaller', () => {
+    expect(clipArtSize(1920, 1080)).toEqual({ width: 640, height: 360 });
+    expect(clipArtSize(1080, 1920)).toEqual({ width: 360, height: 640 });
+    expect(clipArtSize(320, 240)).toEqual({ width: 320, height: 240 });
+  });
+});
+
+describe('keptScale', () => {
+  it('keeps the chosen scale when the animation came out at the planned size', () => {
+    expect(keptScale(150, 640, 640)).toBe(150);
+  });
+
+  it('raises it when a smaller attempt fitted, so the clip shows as big as chosen', () => {
+    expect(keptScale(100, 640, 480)).toBe(133);
+    expect(keptScale(50, 640, 320)).toBe(100);
+  });
+
+  it('stays within 10–300%', () => {
+    expect(keptScale(300, 640, 240)).toBe(300);
   });
 });

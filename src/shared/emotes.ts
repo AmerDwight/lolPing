@@ -21,6 +21,8 @@ export interface CustomEmote {
    */
   w?: number;
   h?: number;
+  /** How big it shows, as a percentage of that size, chosen when it was added: EMOTE_SCALE_MIN to EMOTE_SCALE_MAX. None is 100. */
+  scale?: number;
   /** Made from a video: the clip's length in ms, which is how long it stays on screen when that is longer than usual. */
   clip?: number;
   /** The hash of its `.share.webp`: a small copy of the animation, which room members fetch and play. Only with `animated`. */
@@ -56,6 +58,8 @@ export interface EmoteFile {
   anim?: Uint8Array;
   /** The clip's length in ms, for art made from a video. */
   clip?: number;
+  /** The size the user chose in the size or trim dialog, as a percentage of the art's own. */
+  scale?: number;
   /** The small copy of a moving `anim` for room members (see SHARED_ANIM_MAX_BYTES), when the window could make one. */
   shareAnim?: Uint8Array;
 }
@@ -76,9 +80,13 @@ export const ANIM_MAX_BYTES = 5_242_880;
 export const ANIM_MAX_SIDE = 1024;
 /** A still image's full-size copy is scaled down to this on its longest side: the most a custom emote shows at 100%. */
 export const ART_MAX_SIDE = ANIM_MAX_SIDE;
-/** A custom emote on screen, after the scale: never smaller than this on its longest side, nor larger. */
+/** A custom emote on screen, after its scale: never smaller than this on its longest side, nor larger. */
 export const ART_MIN_PX = 16;
 export const ART_MAX_PX = 2048;
+/** The sizes an imported emote can be given, in percent of its art's own size, and the slider's step between them. */
+export const EMOTE_SCALE_MIN = 10;
+export const EMOTE_SCALE_MAX = 300;
+export const EMOTE_SCALE_STEP = 5;
 /** An imported emote's sound: OGG, MP3 or WAV, at most this many bytes and seconds. */
 export const SOUND_MAX_BYTES = 1_048_576;
 export const SOUND_MAX_S = 5;
@@ -151,6 +159,9 @@ export function emoteName(ref: EmoteRef, lang: Lang, custom: readonly CustomEmot
 
 /** A stored size: an integer from 1 to ART_MAX_SIDE. */
 export const isArtSide = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= ART_MAX_SIDE;
+/** A stored scale: a whole percentage from EMOTE_SCALE_MIN to EMOTE_SCALE_MAX. */
+export const isEmoteScale = (v: unknown): v is number =>
+  Number.isInteger(v) && (v as number) >= EMOTE_SCALE_MIN && (v as number) <= EMOTE_SCALE_MAX;
 /** A stored clip length in ms: whole, and no longer than a shared sound may play. */
 export const isClipMs = (v: unknown): v is number =>
   Number.isInteger(v) && (v as number) >= CLIP_MIN_S * 1000 && (v as number) <= SHARED_SOUND_MAX_S * 1000;
@@ -166,13 +177,18 @@ export function scaledArtSize(w: number, h: number, scale: number): { w: number;
   return { w: Math.max(1, Math.round(w * k)), h: Math.max(1, Math.round(h * k)) };
 }
 
+/** Our own imported emote's size on screen, from its art's size and its own scale; null when its size isn't known. */
+export function ownEmoteSize(c: CustomEmote): { w: number; h: number } | null {
+  return c.w !== undefined && c.h !== undefined ? scaledArtSize(c.w, c.h, c.scale ?? 100) : null;
+}
+
 /**
- * Our own imported emote as it shows here: its full-size art (main serves the still when there is none), at `scale`
- * percent of its own size, with its sound when it has one, for its clip's length when it is a clip.
+ * Our own imported emote as it shows here: its full-size art (main serves the still when there is none), at its own
+ * size, with its sound when it has one, for its clip's length when it is a clip.
  */
-export function ownCustomArt(c: CustomEmote, scale: number): EmoteArt {
+export function ownCustomArt(c: CustomEmote): EmoteArt {
   const hash = customHash(c.id);
-  const size = c.w !== undefined && c.h !== undefined ? scaledArtSize(c.w, c.h, scale) : {};
+  const size = ownEmoteSize(c) ?? {};
   return {
     kind: 'custom', url: customAnimUrl(hash), animated: c.animated, fx: c.fx ?? 0, ...size,
     ...(c.sound ? { sound: customSoundUrl(hash) } : {}),

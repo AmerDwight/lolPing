@@ -56,7 +56,7 @@ const emoteWheel = new Wheel(emoteSvg, 'EMOTE', centers.emote, tick);
 function localArt(ref: EmoteRef): EmoteArt {
   if (isBundledEmote(ref)) return { kind: 'bundled', slug: ref };
   const custom = settings.customEmotes.find((c) => c.id === ref);
-  return custom ? ownCustomArt(custom, settings.customEmoteScale) : { kind: 'placeholder' };
+  return custom ? ownCustomArt(custom) : { kind: 'placeholder' };
 }
 
 /** Our newest ping on this display while "Keep my last ping on screen" is on. */

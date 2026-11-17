@@ -149,6 +149,19 @@ main.content { overflow: auto; padding: 4px 28px 28px 20px; }
 .clipHead { position: absolute; top: 2px; bottom: 2px; width: 2px; margin-left: -1px; background: var(--colorNeutralForeground1); pointer-events: none; }
 .clipTimes { font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text3); }
 .clipWorking { display: inline-flex; align-items: center; gap: 6px; margin-right: auto; font-size: 12px; }
+/* The size row both import dialogs share, and the size dialog's preview: the image at the size it will show, on a
+   checkerboard so its transparent parts read as such. */
+.sizeRow { display: flex; align-items: center; gap: 8px; }
+.sizeRow .fui-Slider { flex: 1; }
+.sizeLabel { font-size: 14px; }
+.sizeValue { min-width: 150px; text-align: right; font-size: 12px; font-variant-numeric: tabular-nums; color: var(--text3); }
+.sizeBody { display: grid; gap: 10px; }
+.sizeStage {
+  display: grid; place-items: center; height: 320px; overflow: hidden; border-radius: 4px; border: 1px solid var(--stroke);
+  background: repeating-conic-gradient(var(--card-hover) 0% 25%, transparent 0% 50%) 50% / 16px 16px;
+}
+.sizeStage img { display: block; }
+.sizeNote { font-size: 12px; color: var(--text3); }
 .weHint { min-height: 16px; margin-top: 10px; font-size: 12px; line-height: 16px; color: var(--text3); }
 @media (max-width: 860px) { .weBody { grid-template-columns: 1fr; justify-items: center; } }
 .rowNote { margin: 1px 0 4px; padding: 0 20px 0 60px; font-size: 12px; line-height: 16px; color: var(--text3); }

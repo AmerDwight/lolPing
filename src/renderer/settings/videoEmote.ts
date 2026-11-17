@@ -4,7 +4,7 @@ import { encodeWav } from '../../shared/wav';
 import { muxWebpAnimation, type WebpFrame } from '../../shared/webpAnim';
 import { encodeSharedAnim, type AnimSource } from '../shared/animShare';
 import { encodeShared } from '../shared/soundShare';
-import { clipAttempts, clipFrames, initialRange, type ClipRange } from './clipRange';
+import { clipArtSize, clipAttempts, clipFrames, initialRange, keptScale, type ClipRange } from './clipRange';
 import { encodeStill, fitSize, nameFromFile } from './emoteImport';
 
 /** A picked video, ready for the trim dialog: an object URL for its preview, its length and size. Revoke `url` when done. */
@@ -153,7 +153,7 @@ const closeAll = (frames: readonly AnimSource[]): void => {
  */
 async function clipAnimation(
   video: HTMLVideoElement, r: ClipRange, progress: (done: number) => void,
-): Promise<{ anim: Uint8Array; small: AnimSource[] } | null> {
+): Promise<{ anim: Uint8Array; side: number; small: AnimSource[] } | null> {
   const longest = Math.max(video.videoWidth, video.videoHeight);
   const thumb = fitSize(video.videoWidth, video.videoHeight, SHARED_ANIM_SIDE);
   for (const attempt of clipAttempts(longest)) {
@@ -179,7 +179,7 @@ async function clipAnimation(
         progress((i + 1) / times.length);
       }
       const anim = frames.length === times.length ? muxWebpAnimation(frames, size.width, size.height) : null;
-      if (anim && anim.length <= ANIM_MAX_BYTES) return { anim, small: small.splice(0) };
+      if (anim && anim.length <= ANIM_MAX_BYTES) return { anim, side: Math.max(size.width, size.height), small: small.splice(0) };
     } finally {
       closeAll(small); // what wasn't handed back
     }
@@ -188,12 +188,13 @@ async function clipAnimation(
 }
 
 /**
- * Makes an emote from the clip `r` of a loaded video: its frames as the animation and a small copy of them for rooms, its
- * first frame as the still, and, when `sound` is given, that part of the sound. 'detail' when the still can't be made small enough, 'animSize' when the
+ * Makes an emote from the clip `r` of a loaded video, shown at `scale` percent of clipArtSize: its frames as the
+ * animation and a small copy of them for rooms, its first frame as the still, and, when `sound` is given, that part of
+ * the sound. 'detail' when the still can't be made small enough, 'animSize' when the
  * frames can't, 'videoType' when the video stops playing along the way.
  */
 export async function prepareClip(
-  name: string, video: LoadedVideo, r: ClipRange, sound: AudioBuffer | null, progress: (done: number) => void,
+  name: string, video: LoadedVideo, r: ClipRange, sound: AudioBuffer | null, scale: number, progress: (done: number) => void,
 ): Promise<{ ok: true; clip: PreparedClip } | { ok: false; error: ImportError }> {
   const el = videoElement(video.url);
   try {
@@ -209,7 +210,9 @@ export async function prepareClip(
       closeAll(made.small);
     }
     const clip = Math.round((r.end - r.start) * 1000);
-    const file: EmoteFile = { name: nameFromFile(name), still, anim: made.anim, clip, ...(shareAnim ? { shareAnim } : {}) };
+    const planned = clipArtSize(video.width, video.height);
+    const kept = keptScale(scale, Math.max(planned.width, planned.height), made.side);
+    const file: EmoteFile = { name: nameFromFile(name), still, anim: made.anim, clip, scale: kept, ...(shareAnim ? { shareAnim } : {}) };
     return { ok: true, clip: { file, sound: sound ? await clipSound(sound, r) : null } };
   } catch {
     return { ok: false, error: 'videoType' };

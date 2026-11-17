@@ -1,13 +1,12 @@
 import { Button, Spinner } from '@fluentui/react-components';
 import {
-  CursorClick24Regular, Emoji24Regular, ImageAdd24Regular, ImageMultiple24Regular, ResizeLarge24Regular, Speaker2Regular,
-  Speaker224Regular, SpeakerMuteRegular,
+  CursorClick24Regular, Emoji24Regular, ImageAdd24Regular, ResizeLarge24Regular, Speaker2Regular, Speaker224Regular, SpeakerMuteRegular,
 } from '@fluentui/react-icons';
 import { useEffect, useRef, useState } from 'react';
 import { DEFAULT_CLICK_EMOTE, DEFAULT_EMOTE_WHEEL, EMOTE_CATALOG } from '../../../shared/emoteCatalog';
 import {
-  MAX_CUSTOM_EMOTES, customHash, customStillUrl, emoteIconUrl, emoteName, type CustomEmote, type EmoteRef, type ImportError,
-  type SoundError,
+  MAX_CUSTOM_EMOTES, customHash, customStillUrl, emoteIconUrl, emoteName, type CustomEmote, type EmoteFile, type EmoteRef,
+  type ImportError, type SoundError,
 } from '../../../shared/emotes';
 import type { Strings } from '../../../shared/i18n';
 import { separateAskKey, triggerLabel, type Settings } from '../../../shared/settings';
@@ -18,6 +17,7 @@ import { useText } from '../text';
 import type { Update } from '../useAppState';
 import { isVideoFile } from '../videoEmote';
 import { ClipTrimmer, type ClipResult } from './ClipTrimmer';
+import { EmoteSizer } from './EmoteSizer';
 import { SettingRow, SliderRow, SwitchRow } from './rows';
 import { TriggerPicker } from './TriggerPicker';
 import { WheelEditor, type PoolItem } from './WheelEditor';
@@ -61,12 +61,17 @@ async function soundFile(id: EmoteRef, file: File): Promise<SoundError | null> {
   }
 }
 
-/** Prepares one image here and hands it to main, which checks and saves it. */
-async function importFile(file: File): Promise<ImportError | null> {
+/**
+ * Prepares one image here, lets the user size it in the size dialog, and hands it to main, which checks and saves it.
+ * Nothing is saved when the dialog is cancelled.
+ */
+async function importFile(file: File, size: (prepared: EmoteFile) => Promise<EmoteFile | null>): Promise<ImportError | null> {
   try {
     const prepared = await prepareEmote(file);
     if (!prepared.ok) return prepared.error;
-    const result = await api.importEmote(prepared.file);
+    const sized = await size(prepared.file);
+    if (!sized) return null;
+    const result = await api.importEmote(sized);
     return result.ok ? null : result.error;
   } catch {
     return 'disk'; // the file couldn't be read, or main failed unexpectedly
@@ -92,25 +97,34 @@ async function saveClip(t: Strings, result: ClipResult, file: string): Promise<s
   }
 }
 
-/** The video waiting in the trim dialog, and what to do with the dialog's result. */
-interface PendingClip {
-  file: File;
-  done(result: ClipResult): void;
-}
+/** The import waiting on a dialog: a video in the trim dialog, or a prepared image in the size dialog. */
+type Pending =
+  | { kind: 'clip'; file: File; done(result: ClipResult): void }
+  | { kind: 'size'; file: EmoteFile; done(result: EmoteFile | null): void };
 
 /**
  * Add image… and what an import has to say, under the pool. Files from the button or dropped on the pool are imported one
- * at a time, a video after its trim dialog closes; the errors of a batch stay until an import succeeds with none.
+ * at a time, each after its dialog closes: the trim dialog for a video, the size dialog for an image. The errors of a batch
+ * stay until an import succeeds with none.
  */
 function useImports(t: Strings) {
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
-  const [clip, setClip] = useState<PendingClip | null>(null);
+  const [pending, setPending] = useState<Pending | null>(null);
   const queue = useRef<Promise<void>>(Promise.resolve());
-  const trim = (file: File): Promise<ClipResult> => new Promise((resolve) => setClip({
+  const trim = (file: File): Promise<ClipResult> => new Promise((resolve) => setPending({
+    kind: 'clip',
     file,
     done: (result) => {
-      setClip(null);
+      setPending(null);
+      resolve(result);
+    },
+  }));
+  const size = (file: EmoteFile): Promise<EmoteFile | null> => new Promise((resolve) => setPending({
+    kind: 'size',
+    file,
+    done: (result) => {
+      setPending(null);
       resolve(result);
     },
   }));
@@ -140,7 +154,7 @@ function useImports(t: Strings) {
           const message = await saveClip(t, await trim(file), file.name);
           if (message) batch.push(message);
         } else {
-          const error = await importFile(file);
+          const error = await importFile(file, size);
           if (error) batch.push(importMessage(t, error, file.name));
         }
         setErrors([...batch]);
@@ -157,7 +171,7 @@ function useImports(t: Strings) {
       setBusy(false);
     });
   };
-  return { busy, errors, clip, importFiles, importSound, clearErrors: () => setErrors([]) };
+  return { busy, errors, pending, importFiles, importSound, clearErrors: () => setErrors([]) };
 }
 
 /** The settings change for a wheel edit: only the fields it touches, since an undefined field would reset that setting. */
@@ -180,7 +194,7 @@ export function EmoteSection({ settings: s, update, lengthUnit }: { settings: Se
   // With no key there is nothing to name in the labels, so they fall back to the row's own title.
   const key = s.emoteTrigger === 'off' ? t.emoteKey : triggerLabel(s.emoteTrigger, t.lang, api.platform);
 
-  const { busy, errors, clip, importFiles, importSound, clearErrors } = useImports(t);
+  const { busy, errors, pending, importFiles, importSound, clearErrors } = useImports(t);
   const picker = useRef<HTMLInputElement>(null);
   const soundPicker = useRef<HTMLInputElement>(null);
   const soundFor = useRef<EmoteRef | null>(null); // the emote whose speaker opened the sound picker
@@ -252,9 +266,6 @@ export function EmoteSection({ settings: s, update, lengthUnit }: { settings: Se
         checked={s.emoteClick} onChange={(v) => void update({ emoteClick: v })} dim={keyOff} />
       <SliderRow limit="emoteSizePx" icon={<ResizeLarge24Regular />} title={t.emoteSize} description={t.emoteSizeDesc}
         value={s.emoteSizePx} format={(v) => `${v} ${lengthUnit}`} onChange={(v) => void update({ emoteSizePx: v })} dim={keyOff} />
-      <SliderRow limit="customEmoteScale" icon={<ImageMultiple24Regular />} title={t.customEmoteScale}
-        description={t.customEmoteScaleDesc} value={s.customEmoteScale} format={(v) => `${v}%`}
-        onChange={(v) => void update({ customEmoteScale: v })} dim={keyOff} />
       <SwitchRow icon={<Speaker224Regular />} title={t.emoteSound} description={t.emoteSoundDesc}
         checked={s.emoteSound} onChange={(v) => void update({ emoteSound: v })} dim={keyOff} />
       <WheelEditor wheel={s.emoteWheel} center={s.clickEmoteId} centerOn={s.emoteClick && !keyOff} trigger={key}
@@ -265,7 +276,9 @@ export function EmoteSection({ settings: s, update, lengthUnit }: { settings: Se
         defaults={{ wheel: DEFAULT_EMOTE_WHEEL, center: DEFAULT_CLICK_EMOTE }}
         labels={{ title: t.emoteWheelTitle, desc: t.emoteWheelDesc(key), poolTitle: t.allEmotes, poolDesc: t.allEmotesDesc }}
         onChange={(patch) => void update(emotePatch(patch))} onPreview={(ref) => void api.previewEmote(ref)} />
-      {clip ? <ClipTrimmer key={`${clip.file.name}:${clip.file.lastModified}`} file={clip.file} onDone={clip.done} /> : null}
+      {pending?.kind === 'clip'
+        ? <ClipTrimmer key={`${pending.file.name}:${pending.file.lastModified}`} file={pending.file} onDone={pending.done} /> : null}
+      {pending?.kind === 'size' ? <EmoteSizer file={pending.file} onDone={pending.done} /> : null}
     </>
   );
 }

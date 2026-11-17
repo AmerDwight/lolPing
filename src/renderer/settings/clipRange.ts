@@ -1,4 +1,4 @@
-import { CLIP_MAX_S, CLIP_MIN_S } from '../../shared/emotes';
+import { CLIP_MAX_S, CLIP_MIN_S, EMOTE_SCALE_MAX, EMOTE_SCALE_MIN } from '../../shared/emotes';
 import { frameDurations } from '../../shared/webpAnim';
 
 /** The part of a video that becomes an emote, in seconds from its start. */
@@ -59,6 +59,21 @@ export function clipAttempts(longest: number): ClipAttempt[] {
     { fps: 12, side: 360, quality: 0.55 },
     { fps: 10, side: 240, quality: 0.5 },
   ].map((a) => ({ ...a, side: Math.min(a.side, longest) }));
+}
+
+/** The size a clip's animation is made at when the first of clipAttempts fits: what its size slider is a percentage of. */
+export function clipArtSize(width: number, height: number): { width: number; height: number } {
+  const k = Math.min(1, clipAttempts(Math.max(width, height))[0].side / Math.max(width, height));
+  return { width: Math.max(1, Math.round(width * k)), height: Math.max(1, Math.round(height * k)) };
+}
+
+/**
+ * The scale to keep when the animation came out at `made` px on its longest side instead of the `planned` the slider
+ * showed (a later, smaller attempt fitted): the clip still shows as big as the user picked, as far as the scale's limits
+ * allow.
+ */
+export function keptScale(scale: number, planned: number, made: number): number {
+  return Math.min(EMOTE_SCALE_MAX, Math.max(EMOTE_SCALE_MIN, Math.round((scale * planned) / made)));
 }
 
 /** A time in a video as m:ss.t, the way the trim dialog shows it. */

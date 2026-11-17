@@ -85,6 +85,13 @@ describe('EmoteLibrary', () => {
     expect(files(lib.dir)).toContain(`${hashOf(still(160, 90, 600, 1))}.anim.webp`);
   });
 
+  it('keeps the scale chosen for it on the entry', async () => {
+    const lib = new EmoteLibrary(join(tempDir(), 'emotes'));
+    const result = await lib.save({ name: 'big', still: still(160, 90, 600, 1), anim: stillExtended(0, 640, 360), scale: 50 }, []);
+    expect(result).toMatchObject({ ok: true, emote: { w: 640, h: 360, scale: 50 } });
+    expect(resolveEmoteArt(result.ok ? result.emote.id : 'gg', result.ok ? [result.emote] : [], false)).toMatchObject({ w: 320, h: 180 });
+  });
+
   it('keeps a clip\'s length only for art that moves', async () => {
     const lib = new EmoteLibrary(join(tempDir(), 'emotes'));
     const clip = await lib.save({ name: 'clip', still: still(160, 90, 600, 1), anim: webpAnim(320, 180), clip: 4200 }, []);
@@ -318,6 +325,12 @@ describe('emoteFileFrom', () => {
     expect(emoteFileFrom({ name: 'x', still: Buffer.from(s) })).not.toBeNull(); // a Buffer is a Uint8Array
   });
 
+  it('keeps a scale the size dialog chose, and drops one out of range rather than the import', () => {
+    const s = still();
+    expect(emoteFileFrom({ name: 'x', still: s, scale: 150 })).toEqual({ name: 'x', still: s, scale: 150 });
+    for (const scale of [5, 301, 52.5, '150']) expect(emoteFileFrom({ name: 'x', still: s, scale }), String(scale)).toEqual({ name: 'x', still: s });
+  });
+
   it('keeps a copy for rooms only as bytes, and drops one that isn’t rather than the import', () => {
     const s = still();
     const a = webpAnim();
@@ -418,12 +431,13 @@ describe('resolveEmoteArt', () => {
     expect(resolveEmoteArt(picked.id, [picked], false)).toEqual({ kind: 'custom', url: `lolping://emotes/${hash}.anim`, animated: false, fx: 5 });
   });
 
-  it('sizes our own emote at the scale, in its own proportions, and leaves a room member’s to their message', () => {
+  it('sizes our own emote at its own scale, in its own proportions, and leaves a room member’s to their message', () => {
     const sized: CustomEmote = { ...moving, w: 400, h: 200 };
+    const half: CustomEmote = { ...sized, scale: 50 };
     expect(resolveEmoteArt(sized.id, [sized], false)).toMatchObject({ w: 400, h: 200 });
-    expect(resolveEmoteArt(sized.id, [sized], false, () => false, 50)).toMatchObject({ w: 200, h: 100 });
-    expect(resolveEmoteArt(sized.id, [sized], true, () => false, 50)).not.toHaveProperty('w');
-    expect(resolveEmoteArt(moving.id, [moving], false, () => false, 50)).not.toHaveProperty('w'); // no size known: the square
+    expect(resolveEmoteArt(half.id, [half], false)).toMatchObject({ w: 200, h: 100 });
+    expect(resolveEmoteArt(half.id, [half], true)).not.toHaveProperty('w');
+    expect(resolveEmoteArt(moving.id, [{ ...moving, scale: 50 }], false)).not.toHaveProperty('w'); // no size known: the square
   });
 
   it('keeps a clip on screen for its length when that is longer than an emote stays', () => {

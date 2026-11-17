@@ -12,7 +12,7 @@ import {
   SETTINGS_CH, type About, type AppStatus, type PanelAction, type PanelState, type TeammateHistoryOp,
 } from '../shared/ipc';
 import {
-  announcedEmoteAnims, announcedEmoteHashes, announcedEmoteSounds, customHash, isCustomRef, scaledArtSize, sharedAnimUrl, sharedSoundUrl,
+  announcedEmoteAnims, announcedEmoteHashes, announcedEmoteSounds, customHash, isCustomRef, ownEmoteSize, sharedAnimUrl, sharedSoundUrl,
   type EmoteRef,
 } from '../shared/emotes';
 import { featureOn, liveKeys, roomFeaturesOff } from '../shared/features';
@@ -267,7 +267,7 @@ function start(): void {
         if (!settings.friendEmotes || !cache.has(hash)) return false; // off: friends' images show as the placeholder
         cache.touch(hash); // a shown still is the most recently used at the next cache sweep
         return true;
-      }, settings.customEmoteScale),
+      }),
   );
   overlays.start();
   const bridge = new InputBridge({ command: helperExePath() });
@@ -573,7 +573,7 @@ function start(): void {
     // The effect, size and clip length ride on the message, so friends see the emote as its sender does even before
     // they have the image.
     const mine = settings.customEmotes.find((c) => c.id === p.ref);
-    const size = mine?.w !== undefined && mine.h !== undefined ? scaledArtSize(mine.w, mine.h, settings.customEmoteScale) : {};
+    const size = mine ? ownEmoteSize(mine) ?? {} : {};
     if (shared) room.sendEmote(p.ref, shared, mine?.fx, { ...size, ...(mine?.clip !== undefined ? { du: mine.clip } : {}) });
   });
   // This session's room lines: members' text and alive lines while the text feature is on, and our own.

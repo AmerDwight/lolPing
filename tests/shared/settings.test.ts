@@ -355,12 +355,11 @@ describe('emote settings', () => {
     expect(list).toEqual([{ ...entry('a', 'Mine', true), shareAnim: share }, entry('c'), entry('d', 'Mine', true)]);
   });
 
-  it('customEmoteScale clamps to 10–300% in steps of 5, and is 100% by default', () => {
-    expect(normalizeSettings({}).customEmoteScale).toBe(100);
-    expect(normalizeSettings({ customEmoteScale: 1 }).customEmoteScale).toBe(10);
-    expect(normalizeSettings({ customEmoteScale: 999 }).customEmoteScale).toBe(300);
-    expect(normalizeSettings({ customEmoteScale: 73 }).customEmoteScale).toBe(75);
-    expect(normalizeSettings({ customEmoteScale: 'big' }).customEmoteScale).toBe(100);
+  it('custom emotes keep a scale only when it is a whole percentage from 10 to 300', () => {
+    const list = normalizeSettings({
+      customEmotes: [{ ...entry('a'), scale: 150 }, { ...entry('b'), scale: 5 }, { ...entry('c'), scale: 400 }, { ...entry('d'), scale: 12.5 }],
+    }).customEmotes;
+    expect(list).toEqual([{ ...entry('a'), scale: 150 }, entry('b'), entry('c'), entry('d')]);
   });
 
   it('custom emotes keep a sound flag only when it is true', () => {
@@ -642,7 +641,7 @@ describe('helpers', () => {
     expect(overlaySettings(DEFAULT_SETTINGS)).toEqual({
       pingSizePx: 110, pingDurationS: 3.2, keepLastPing: false, volume: 70, muted: false, tickSound: true,
       wheelSizePx: 600, wheel: ['danger', 'push', 'omw', 'allin', 'assist', 'needvision', 'missing', 'enemyvision'], clickPingId: 'generic',
-      emoteWheel: [...DEFAULT_EMOTE_WHEEL], clickEmoteId: DEFAULT_CLICK_EMOTE, emoteSizePx: 150, customEmoteScale: 100, emoteSound: true,
+      emoteWheel: [...DEFAULT_EMOTE_WHEEL], clickEmoteId: DEFAULT_CLICK_EMOTE, emoteSizePx: 150, emoteSound: true,
       customEmotes: [],
       ask: {
         tag: { name: 'AI', color: 3, rgb: null },

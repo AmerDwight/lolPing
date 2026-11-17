@@ -1,7 +1,7 @@
 import { DEFAULT_CLICK_EMOTE, DEFAULT_EMOTE_WHEEL } from './emoteCatalog';
 import {
-  CUSTOM_NAME_MAX, HASH_RE, MAX_CUSTOM_EMOTES, customHash, isArtSide, isClipMs, isCustomRef, isEmoteFx, normalizeClickEmote,
-  normalizeEmoteWheel,
+  CUSTOM_NAME_MAX, HASH_RE, MAX_CUSTOM_EMOTES, customHash, isArtSide, isClipMs, isCustomRef, isEmoteFx, isEmoteScale,
+  normalizeClickEmote, normalizeEmoteWheel,
   type CustomEmote, type EmoteRef,
 } from './emotes';
 import { DEFAULT_FEATURES, featureOn, normalizeFeatures, type Features } from './features';
@@ -79,10 +79,8 @@ export interface Settings {
   /** The emote wheel's slots, top (N) then clockwise: 8 distinct bundled slugs or imported emotes. */
   emoteWheel: EmoteRef[];
   clickEmoteId: EmoteRef;
-  /** The bundled emotes' size. An imported one has a size of its own, its art's, scaled by `customEmoteScale`. */
+  /** The bundled emotes' size. An imported one has a size of its own: its art's, at the scale chosen when it was added. */
   emoteSizePx: number;
-  /** Imported emotes show at this percentage of their art's own size: 100 is the image as it was added. */
-  customEmoteScale: number;
   emoteSound: boolean;
   /** Imported emotes, at most MAX_CUSTOM_EMOTES. Their files live in the data folder. */
   customEmotes: CustomEmote[];
@@ -140,7 +138,6 @@ export const DEFAULT_SETTINGS: Settings = {
   emoteWheel: [...DEFAULT_EMOTE_WHEEL],
   clickEmoteId: DEFAULT_CLICK_EMOTE,
   emoteSizePx: 150,
-  customEmoteScale: 100,
   emoteSound: true,
   customEmotes: [],
   friendEmotes: true,
@@ -159,7 +156,6 @@ export const LIMITS = {
   volume: { min: 0, max: 100, step: 1 },
   incomingPingLimit: { min: 0, max: 20, step: 1 },
   emoteSizePx: { min: 80, max: 300, step: 1 },
-  customEmoteScale: { min: 10, max: 300, step: 5 },
 } as const;
 
 type NumKey = keyof typeof LIMITS;
@@ -323,6 +319,7 @@ function customEmotes(raw: unknown): CustomEmote[] {
       ...(isEmoteFx(e.fx) ? { fx: e.fx } : {}),
       // A size is both sides or neither: an entry without one is measured again at launch.
       ...(isArtSide(e.w) && isArtSide(e.h) ? { w: e.w, h: e.h } : {}),
+      ...(isEmoteScale(e.scale) ? { scale: e.scale } : {}),
       ...(e.animated && isClipMs(e.clip) ? { clip: e.clip } : {}),
       ...(e.animated && typeof e.shareAnim === 'string' && HASH_RE.test(e.shareAnim) ? { shareAnim: e.shareAnim } : {}),
     });
@@ -379,7 +376,6 @@ export function normalizeSettings(raw: unknown, platform: Platform = 'win', iden
     emoteWheel: normalizeEmoteWheel(r.emoteWheel, custom),
     clickEmoteId: normalizeClickEmote(r.clickEmoteId, custom),
     emoteSizePx: num(r.emoteSizePx, 'emoteSizePx'),
-    customEmoteScale: num(r.customEmoteScale, 'customEmoteScale'),
     emoteSound: bool(r.emoteSound, 'emoteSound'),
     customEmotes: custom,
     friendEmotes: bool(r.friendEmotes, 'friendEmotes'),
@@ -423,7 +419,7 @@ export function triggerLabel(t: TriggerKey, lang: Lang = 'en', platform: Platfor
 export type OverlaySettings = Pick<
   Settings,
   'pingSizePx' | 'pingDurationS' | 'keepLastPing' | 'volume' | 'muted' | 'tickSound' | 'wheelSizePx' | 'wheel' | 'clickPingId'
-  | 'emoteWheel' | 'clickEmoteId' | 'emoteSizePx' | 'customEmoteScale' | 'emoteSound' | 'customEmotes'
+  | 'emoteWheel' | 'clickEmoteId' | 'emoteSizePx' | 'emoteSound' | 'customEmotes'
 > & {
   /** The ask wheel: the teammate's name tag, each slice's intent label, and the slices whose intent is off. */
   ask: {
@@ -441,8 +437,8 @@ export const soundLevel = (s: Pick<Settings, 'volume' | 'muted'>): number => (s.
 export const overlaySettings = (s: Settings, lang: Lang = 'en'): OverlaySettings => ({
   pingSizePx: s.pingSizePx, pingDurationS: s.pingDurationS, keepLastPing: s.keepLastPing, volume: s.volume, muted: s.muted, tickSound: s.tickSound,
   wheelSizePx: s.wheelSizePx, wheel: [...s.wheel], clickPingId: s.clickPingId,
-  emoteWheel: [...s.emoteWheel], clickEmoteId: s.clickEmoteId, emoteSizePx: s.emoteSizePx, customEmoteScale: s.customEmoteScale,
-  emoteSound: s.emoteSound, customEmotes: s.customEmotes.map((c) => ({ ...c })),
+  emoteWheel: [...s.emoteWheel], clickEmoteId: s.clickEmoteId, emoteSizePx: s.emoteSizePx, emoteSound: s.emoteSound,
+  customEmotes: s.customEmotes.map((c) => ({ ...c })),
   ask: askWheel(s, lang),
 });
 
