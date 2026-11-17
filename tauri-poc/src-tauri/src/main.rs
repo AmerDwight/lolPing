@@ -20,7 +20,8 @@ use tauri::menu::{CheckMenuItem, IsMenuItem, Menu, MenuItem, PredefinedMenuItem,
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::utils::config::BackgroundThrottlingPolicy;
 use tauri::{
-    AppHandle, Manager, PhysicalPosition, PhysicalSize, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent, Wry,
+    AppHandle, Manager, PhysicalPosition, PhysicalSize, RunEvent, UriSchemeResponder, WebviewUrl, WebviewWindowBuilder,
+    WindowEvent, Wry,
 };
 
 /// Written out on first start, so the portable build is one file.
@@ -59,6 +60,8 @@ struct State {
     procs: Mutex<HashMap<u32, Proc>>,
     udps: Mutex<HashMap<u32, Udp>>,
     replies: Mutex<HashMap<u64, tokio::sync::oneshot::Sender<Reply>>>,
+    /// lolping:// requests waiting for the app's own handler in the core page.
+    schemes: Mutex<HashMap<u64, UriSchemeResponder>>,
     next_reply: AtomicU64,
     /// Windows asked to let the mouse through, applied again each time one is shown.
     click_through: Mutex<HashSet<String>>,
@@ -399,6 +402,34 @@ fn sys_request(app: &AppHandle, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
         .header("Access-Control-Allow-Origin", "*")
         .body(body.to_string().into_bytes())
         .unwrap_or_else(|_| Response::new(Vec::new()))
+}
+
+/// lolping://emotes/<file>, the app's imported and cached emotes, goes to the handler the app gave protocol.handle in
+/// the core page. Windows serves custom schemes as http://lolping.localhost/<path>, so there the host is the first
+/// path segment.
+fn scheme_request(app: &AppHandle, req: &Request<Vec<u8>>, responder: UriSchemeResponder) {
+    let uri = req.uri();
+    let url = match uri.host() {
+        Some(h) if h == "localhost" || h.ends_with(".localhost") => format!("lolping:/{}", uri.path()),
+        Some(h) => format!("lolping://{h}{}", uri.path()),
+        None => format!("lolping:/{}", uri.path()),
+    };
+    let state = app.state::<State>();
+    let id = state.next_reply.fetch_add(1, Ordering::Relaxed);
+    state.schemes.lock().unwrap().insert(id, responder);
+    to_core(app, format!("window.__core.scheme({id},{})", js_str(&url)));
+}
+
+#[tauri::command]
+fn scheme_reply(app: AppHandle, id: u64, status: u16, headers: Vec<(String, String)>, body: String) {
+    let Some(responder) = app.state::<State>().schemes.lock().unwrap().remove(&id) else { return };
+    // The overlay fetches an emote's sound from its own origin: the app registered the scheme as CORS-enabled.
+    let mut res = Response::builder().status(status).header("Access-Control-Allow-Origin", "*");
+    for (k, v) in &headers {
+        res = res.header(k.as_str(), v.as_str());
+    }
+    let bytes = B64.decode(body).unwrap_or_default();
+    responder.respond(res.body(bytes).unwrap_or_else(|_| Response::builder().status(500).body(Vec::new()).unwrap_or_default()));
 }
 
 /// The same calls, for the stand-ins' async APIs (fs/promises, shell).
@@ -869,9 +900,13 @@ fn main() {
             // Off the main thread: monitors, the cursor and window state are answered by the main thread.
             std::thread::spawn(move || responder.respond(sys_request(&app, &req)));
         })
+        .register_asynchronous_uri_scheme_protocol("lolping", |ctx, req, responder| {
+            scheme_request(ctx.app_handle(), &req, responder);
+        })
         .invoke_handler(tauri::generate_handler![
             sys_async, proc_spawn, proc_write, proc_end, proc_kill, udp_bind, udp_broadcast, udp_send, udp_close,
-            win_create, win_op, win_send, ipc_send, ipc_invoke, ipc_reply, core_ready, tray_set, tray_destroy, log, quit
+            win_create, win_op, win_send, ipc_send, ipc_invoke, ipc_reply, scheme_reply, core_ready, tray_set, tray_destroy,
+            log, quit
         ])
         .setup(|app| {
             log_line(app.handle(), "shell started");

@@ -20,14 +20,36 @@ rmSync(dist, { recursive: true, force: true });
 cpSync(renderer, dist, { recursive: true });
 
 // Tauri's bridge posts to ipc:// (http://ipc.localhost on Windows). Electron's pages had no reason to allow it.
+// Windows serves the lolping scheme as http://lolping.localhost, so the pages may load emotes from there too.
 const IPC = 'ipc: http://ipc.localhost';
 for (const page of readdirSync(dist)) {
   const file = join(dist, page, 'index.html');
   if (!existsSync(file)) continue;
   const html = readFileSync(file, 'utf8');
-  const patched = html.replace(/(http-equiv="Content-Security-Policy"\s+content=")([^"]*)"/, (_m, head, csp) =>
-    `${head}${/connect-src/.test(csp) ? csp.replace(/connect-src/, `connect-src ${IPC}`) : `${csp}; connect-src 'self' ${IPC}`}"`);
+  const patched = html.replace(/(http-equiv="Content-Security-Policy"\s+content=")([^"]*)"/, (_m, head, csp) => {
+    const withEmotes = csp.replaceAll('lolping://emotes', 'lolping://emotes http://lolping.localhost');
+    return `${head}${/connect-src/.test(withEmotes) ? withEmotes.replace(/connect-src/, `connect-src ${IPC}`) : `${withEmotes}; connect-src 'self' ${IPC}`}"`;
+  });
   writeFileSync(file, patched);
+}
+
+// Imported and friends' emotes are lolping://emotes/<file> (src/shared/emotes.ts). WebView2 can't load a custom scheme
+// by its own name: Tauri serves it as http://lolping.localhost/emotes/<file> there. Tauri builds only for the platform
+// they run on, so the build's platform is the app's.
+const EMOTE_URL = '"lolping://emotes/"';
+if (process.platform === 'win32') {
+  const assets = join(dist, 'assets');
+  let found = 0;
+  for (const name of readdirSync(assets).filter((n) => n.endsWith('.js'))) {
+    const js = readFileSync(join(assets, name), 'utf8');
+    if (!js.includes(EMOTE_URL)) continue;
+    found++;
+    writeFileSync(join(assets, name), js.replaceAll(EMOTE_URL, '"http://lolping.localhost/emotes/"'));
+  }
+  if (found === 0) {
+    console.error(`No ${EMOTE_URL} in out/renderer/assets: emotes from the data folder would not load.`);
+    process.exit(1);
+  }
 }
 
 const NODE = {

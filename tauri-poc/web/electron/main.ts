@@ -11,8 +11,9 @@ import { sysAsync, sysSync } from '../sys';
 import { invoke } from '../tauri';
 import { decodeWire, encodeWire } from '../wire';
 import { NativeImage, nativeImage } from './image';
+import { net, protocol } from './protocol';
 
-export { nativeImage, NativeImage };
+export { nativeImage, NativeImage, net, protocol };
 
 const APP_ROOT = '/__lolping_app__';
 const APP_PAGE = /^lolping:\/\/app\/([^#?]+)([#?].*)?$/;
@@ -854,14 +855,6 @@ export const systemPreferences = {
   askForMediaAccess: (): Promise<boolean> => Promise.resolve(true),
 };
 
-/** Tauri serves the app's pages itself (lolping://app becomes its own scheme), so the app's handler isn't needed. */
-export const protocol = {
-  registerSchemesAsPrivileged: (): void => undefined,
-  handle: (): void => undefined,
-  unhandle: (): void => undefined,
-};
-
-export const net = { fetch: (input: string | URL | Request, init?: RequestInit): Promise<Response> => fetch(input, init) };
 
 export const session = { defaultSession: { setPermissionRequestHandler: (): void => undefined } };
 

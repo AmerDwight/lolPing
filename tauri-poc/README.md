@@ -18,9 +18,10 @@ How it is put together:
 - Room encryption and signing use the noble libraries. `tests/tauri-poc/nodeCrypto.test.ts` checks them byte for
   byte against Node, so a Tauri peer and an Electron peer understand each other.
 - The portable build keeps its data in a `data` folder next to the executable, as the Electron portable build does.
+- Imported and friends' emotes are `lolping://emotes/...`, answered by the app's own handler in the core page. On
+  Windows the pages ask for `http://lolping.localhost/emotes/...` instead, the only form WebView2 loads.
 
-Not done: the teammate, custom emote images in the wheel, the single-instance lock, updates, secure storage of
-keys, file dialogs, macOS.
+Not done: the teammate, the single-instance lock, updates, secure storage of keys, file dialogs, macOS.
 
 ## Build
 
@@ -44,5 +45,6 @@ which Windows 11 includes.
   memory, startup time.
 - `e2e/e2e_room.py` on both portable builds together. The Tauri build changes a setting and checks
   `data/settings.json`, creates a room, the Electron build joins it, and each sends a ping that the other draws.
+  Then each imports a custom emote and the other's overlay loads it once the room has synced it.
 
 The `tests/tauri-poc` unit tests need `npm ci --prefix tauri-poc` first.
